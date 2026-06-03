@@ -3,10 +3,11 @@ const express = require('express');
 const twilio = require('twilio');
 const puppeteer = require('puppeteer');
 const cloudinary = require('cloudinary').v2;
+const nodemailer = require('nodemailer');
 const { execSync } = require('child_process');
 
 try {
-  const chromePath = execSync('find /opt/render/.cache/puppeteer -name "chrome" -type f').toString().trim();
+  const chromePath = execSync('find /opt/render/project/src/.cache/puppeteer -name "chrome" -type f').toString().trim();
   console.log('Chrome found at:', chromePath);
 } catch (e) {
   console.log('Chrome not found:', e.message);
@@ -24,44 +25,68 @@ cloudinary.config({
 
 const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.GMAIL_USER,
+    pass: process.env.GMAIL_APP_PASSWORD,
+  },
+});
+
+async function sendMMS(imageUrl, caption) {
+  const mailOptions = {
+    from: process.env.GMAIL_USER,
+    to: `${process.env.VERIZON_NUMBER}@mypixmessages.com`,
+    subject: '',
+    text: caption || '',
+    attachments: [
+      {
+        filename: 'screenshot.jpg',
+        path: imageUrl,
+      },
+    ],
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+  } catch (err) {
+    console.log('First attempt failed, retrying...', err.message);
+    await new Promise(r => setTimeout(r, 3000));
+    await transporter.sendMail(mailOptions);
+  }
+}
+
 async function parseCommand(text) {
   text = text.trim();
 
-  // Direct URL
   if (text.toLowerCase().startsWith('ss http')) {
     return text.slice(3).trim();
   }
 
-  // X/Twitter profile
   if (text.toLowerCase().startsWith('x @')) {
     const username = text.slice(3).trim();
     return `https://x.com/${username}`;
   }
 
-  // X/Twitter URL
   if (text.toLowerCase().startsWith('x http')) {
     return text.slice(2).trim();
   }
 
-  // Reddit
   if (text.toLowerCase().startsWith('reddit ')) {
     const sub = text.slice(7).trim();
     return `https://reddit.com/r/${sub}`;
   }
 
-  // Wikipedia
   if (text.toLowerCase().startsWith('wiki ')) {
     const topic = text.slice(5).trim().replace(/ /g, '_');
     return `https://en.wikipedia.org/wiki/${topic}`;
   }
 
-  // YouTube search
   if (text.toLowerCase().startsWith('yt ')) {
     const query = text.slice(3).trim().replace(/ /g, '+');
     return `https://www.youtube.com/results?search_query=${query}`;
   }
 
-  // DuckDuckGo fallback — get first result
   const searchQuery = encodeURIComponent(text);
   const searchUrl = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
 
@@ -74,7 +99,6 @@ async function parseCommand(text) {
   await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
   await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-  // Grab first organic result
   const firstUrl = await page.evaluate(() => {
     const links = document.querySelectorAll('a.result__a');
     for (const a of links) {
@@ -88,10 +112,11 @@ async function parseCommand(text) {
 
   await browser.close();
   return firstUrl || searchUrl;
+}
 
 async function takeScreenshot(url) {
   const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/opt/render/.cache/puppeteer/chrome/linux-121.0.6167.85/chrome-linux64/chrome',
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: 'new',
   });
@@ -117,7 +142,6 @@ async function uploadToCloudinary(buffer) {
   });
 }
 
-// Test web interface
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -175,7 +199,6 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Test endpoint
 app.post('/test', async (req, res) => {
   const { command } = req.body;
   try {
@@ -189,7 +212,20 @@ app.post('/test', async (req, res) => {
   }
 });
 
-// Twilio webhook
+app.post('/test-mms', async (req, res) => {
+  const { command } = req.body;
+  try {
+    const url = await parseCommand(command);
+    const buffer = await takeScreenshot(url);
+    const imageUrl = await uploadToCloudinary(buffer);
+    await sendMMS(imageUrl, url);
+    res.json({ success: true, imageUrl, url });
+  } catch (err) {
+    console.error(err);
+    res.json({ error: err.message });
+  }
+});
+
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body?.trim();
   const from = req.body.From;
