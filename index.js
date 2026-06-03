@@ -89,7 +89,13 @@ async function takeScreenshot(url) {
   });
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
-  const response = await fetch(screenshotUrl);
+console.log('Screenshot URL:', screenshotUrl);
+const response = await fetch(screenshotUrl);
+if (!response.ok) {
+  const errorText = await response.text();
+  console.log('API error response:', errorText);
+  throw new Error(`Screenshot API error: ${errorText}`);
+}
 
   if (!response.ok) {
     throw new Error(`Screenshot API error: ${response.statusText}`);
