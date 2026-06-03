@@ -76,6 +76,7 @@ function parseUrl(text) {
 }
 
 async function takeScreenshot(url) {
+  console.log('Using ScreenshotOne key:', process.env.SCREENSHOTONE_KEY);
   const params = new URLSearchParams({
     access_key: process.env.SCREENSHOTONE_KEY,
     url: url,
