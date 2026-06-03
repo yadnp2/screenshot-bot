@@ -1,7 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const puppeteer = require('puppeteer-core');
+const puppeteer = require('puppeteer');
 const cloudinary = require('cloudinary').v2;
 const { execSync } = require('child_process');
 
