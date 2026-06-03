@@ -58,6 +58,7 @@ async function parseCommand(text) {
   const searchUrl = `https://www.google.com/search?q=${searchQuery}`;
 
   const browser = await puppeteer.launch({
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/opt/render/.cache/puppeteer/chrome/linux-121.0.6167.85/chrome-linux64/chrome',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: 'new',
   });
@@ -83,6 +84,7 @@ async function parseCommand(text) {
 
 async function takeScreenshot(url) {
   const browser = await puppeteer.launch({
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/opt/render/.cache/puppeteer/chrome/linux-121.0.6167.85/chrome-linux64/chrome',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: 'new',
   });
