@@ -61,12 +61,12 @@ async function parseCommand(text) {
     return `https://www.youtube.com/results?search_query=${query}`;
   }
 
-  // Google fallback — get first result
+  // DuckDuckGo fallback — get first result
   const searchQuery = encodeURIComponent(text);
-  const searchUrl = `https://www.google.com/search?q=${searchQuery}`;
+  const searchUrl = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
 
   const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/opt/render/.cache/puppeteer/chrome/linux-121.0.6167.85/chrome-linux64/chrome',
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
     headless: 'new',
   });
@@ -76,10 +76,10 @@ async function parseCommand(text) {
 
   // Grab first organic result
   const firstUrl = await page.evaluate(() => {
-    const anchors = document.querySelectorAll('a[jsname]');
-    for (const a of anchors) {
+    const links = document.querySelectorAll('a.result__a');
+    for (const a of links) {
       const href = a.href;
-      if (href && href.startsWith('http') && !href.includes('google.com')) {
+      if (href && href.startsWith('http')) {
         return href;
       }
     }
@@ -88,7 +88,6 @@ async function parseCommand(text) {
 
   await browser.close();
   return firstUrl || searchUrl;
-}
 
 async function takeScreenshot(url) {
   const browser = await puppeteer.launch({
