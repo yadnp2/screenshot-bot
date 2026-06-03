@@ -72,7 +72,7 @@ function parseUrl(text) {
   }
 
   // DuckDuckGo "I'm Feeling Lucky" style — just build search URL
-  return `https://duckduckgo.com/?q=!ducky+${encodeURIComponent(text)}`;
+  return `https://www.google.com/search?q=${encodeURIComponent(text)}`;
 }
 
 async function takeScreenshot(url) {
