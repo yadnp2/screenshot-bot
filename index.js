@@ -1,17 +1,10 @@
 require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
-const puppeteer = require('puppeteer');
 const cloudinary = require('cloudinary').v2;
 const nodemailer = require('nodemailer');
-const { execSync } = require('child_process');
-
-try {
-  const chromePath = execSync('find /opt/render/project/src/.cache/puppeteer -name "chrome" -type f').toString().trim();
-  console.log('Chrome found at:', chromePath);
-} catch (e) {
-  console.log('Chrome not found:', e.message);
-}
+const fetch = require('node-fetch');
+const { ImapFlow } = require('imapflow');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -23,7 +16,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -46,9 +39,9 @@ async function sendMMS(imageUrl, caption) {
       },
     ],
   };
-
   try {
     await transporter.sendMail(mailOptions);
+    console.log('MMS sent successfully');
   } catch (err) {
     console.log('First attempt failed, retrying...', err.message);
     await new Promise(r => setTimeout(r, 3000));
@@ -56,76 +49,53 @@ async function sendMMS(imageUrl, caption) {
   }
 }
 
-async function parseCommand(text) {
+function parseUrl(text) {
   text = text.trim();
 
   if (text.toLowerCase().startsWith('ss http')) {
     return text.slice(3).trim();
   }
-
   if (text.toLowerCase().startsWith('x @')) {
-    const username = text.slice(3).trim();
-    return `https://x.com/${username}`;
+    return `https://x.com/${text.slice(3).trim()}`;
   }
-
   if (text.toLowerCase().startsWith('x http')) {
     return text.slice(2).trim();
   }
-
   if (text.toLowerCase().startsWith('reddit ')) {
-    const sub = text.slice(7).trim();
-    return `https://reddit.com/r/${sub}`;
+    return `https://reddit.com/r/${text.slice(7).trim()}`;
   }
-
   if (text.toLowerCase().startsWith('wiki ')) {
-    const topic = text.slice(5).trim().replace(/ /g, '_');
-    return `https://en.wikipedia.org/wiki/${topic}`;
+    return `https://en.wikipedia.org/wiki/${text.slice(5).trim().replace(/ /g, '_')}`;
   }
-
   if (text.toLowerCase().startsWith('yt ')) {
-    const query = text.slice(3).trim().replace(/ /g, '+');
-    return `https://www.youtube.com/results?search_query=${query}`;
+    return `https://www.youtube.com/results?search_query=${text.slice(3).trim().replace(/ /g, '+')}`;
   }
 
-  const searchQuery = encodeURIComponent(text);
-  const searchUrl = `https://html.duckduckgo.com/html/?q=${searchQuery}`;
-
-  const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    headless: 'new',
-  });
-  const page = await browser.newPage();
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
-  await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-
-  const firstUrl = await page.evaluate(() => {
-    const links = document.querySelectorAll('a.result__a');
-    for (const a of links) {
-      const href = a.href;
-      if (href && href.startsWith('http')) {
-        return href;
-      }
-    }
-    return null;
-  });
-
-  await browser.close();
-  return firstUrl || searchUrl;
+  // DuckDuckGo "I'm Feeling Lucky" style — just build search URL
+  return `https://duckduckgo.com/?q=!ducky+${encodeURIComponent(text)}`;
 }
 
 async function takeScreenshot(url) {
-  const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    headless: 'new',
+  const params = new URLSearchParams({
+    access_key: process.env.SCREENSHOTONE_KEY,
+    url: url,
+    viewport_width: '1280',
+    viewport_height: '800',
+    format: 'jpg',
+    image_quality: '80',
+    block_ads: 'true',
+    block_cookie_banners: 'true',
+    block_trackers: 'true',
   });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 800 });
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
-  await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-  const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
-  await browser.close();
+
+  const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
+  const response = await fetch(screenshotUrl);
+
+  if (!response.ok) {
+    throw new Error(`Screenshot API error: ${response.statusText}`);
+  }
+
+  const buffer = await response.buffer();
   return buffer;
 }
 
@@ -142,6 +112,77 @@ async function uploadToCloudinary(buffer) {
   });
 }
 
+async function processCommand(command) {
+  const url = parseUrl(command);
+  const buffer = await takeScreenshot(url);
+  const imageUrl = await uploadToCloudinary(buffer);
+  return { url, imageUrl };
+}
+
+// Gmail IMAP polling
+async function startGmailPolling() {
+  console.log('Starting Gmail IMAP polling...');
+
+  const checkMail = async () => {
+    const client = new ImapFlow({
+      host: 'imap.gmail.com',
+      port: 993,
+      secure: true,
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD,
+      },
+      logger: false,
+    });
+
+    try {
+      await client.connect();
+      const lock = await client.getMailboxLock('INBOX');
+
+      try {
+        // Search for unread emails from vtext
+        const messages = await client.search({
+          unseen: true,
+          from: `${process.env.VERIZON_NUMBER}@vtext.com`,
+        });
+
+        for (const uid of messages) {
+          const message = await client.fetchOne(uid, { source: true, envelope: true });
+          const subject = message.envelope.subject || '';
+          const command = subject.trim();
+
+          console.log('Received SMS command:', command);
+
+          // Mark as read
+          await client.messageFlagsAdd(uid, ['\\Seen']);
+
+          if (command) {
+            try {
+              const { url, imageUrl } = await processCommand(command);
+              await sendMMS(imageUrl, url);
+              console.log('Screenshot sent for:', command);
+            } catch (err) {
+              console.error('Error processing command:', err.message);
+              await sendMMS(null, `Sorry, could not get screenshot for: ${command}`);
+            }
+          }
+        }
+      } finally {
+        lock.release();
+      }
+
+      await client.logout();
+    } catch (err) {
+      console.error('IMAP error:', err.message);
+    }
+  };
+
+  // Check every 15 seconds
+  setInterval(checkMail, 15000);
+  checkMail(); // run immediately on startup
+}
+
+// Web test interface
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -151,7 +192,7 @@ app.get('/', (req, res) => {
       <style>
         body { font-family: sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
         input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
-        button { padding: 12px 24px; font-size: 16px; background: #0066ff; color: white; border: none; border-radius: 6px; cursor: pointer; }
+        button { padding: 12px 24px; font-size: 16px; background: #0066ff; color: white; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px; }
         #result { margin-top: 20px; }
         #result img { max-width: 100%; border-radius: 8px; margin-top: 10px; }
         #status { color: #666; font-style: italic; margin-top: 10px; }
@@ -167,10 +208,11 @@ app.get('/', (req, res) => {
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
-        <code>fox news</code> — anything else = Google it
+        <code>fox news</code> — anything else = DuckDuckGo it
       </div>
       <input type="text" id="cmd" placeholder="Try: fox news" />
-      <button onclick="run()">Get Screenshot</button>
+      <button onclick="run()">Test in Browser</button>
+      <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
       <div id="result"></div>
       <script>
@@ -192,6 +234,24 @@ app.get('/', (req, res) => {
             document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
           }
         }
+        async function runMMS() {
+          const cmd = document.getElementById('cmd').value.trim();
+          if (!cmd) return;
+          document.getElementById('status').innerText = 'Taking screenshot and sending to your phone...';
+          document.getElementById('result').innerHTML = '';
+          const res = await fetch('/test-mms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+          });
+          const data = await res.json();
+          document.getElementById('status').innerText = '';
+          if (data.success) {
+            document.getElementById('result').innerHTML = '<p>✅ Sent to your phone! URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a></p><img src="' + data.imageUrl + '" />';
+          } else {
+            document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
+          }
+        }
         document.getElementById('cmd').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
       </script>
     </body>
@@ -202,9 +262,7 @@ app.get('/', (req, res) => {
 app.post('/test', async (req, res) => {
   const { command } = req.body;
   try {
-    const url = await parseCommand(command);
-    const buffer = await takeScreenshot(url);
-    const imageUrl = await uploadToCloudinary(buffer);
+    const { url, imageUrl } = await processCommand(command);
     res.json({ imageUrl, url });
   } catch (err) {
     console.error(err);
@@ -215,9 +273,7 @@ app.post('/test', async (req, res) => {
 app.post('/test-mms', async (req, res) => {
   const { command } = req.body;
   try {
-    const url = await parseCommand(command);
-    const buffer = await takeScreenshot(url);
-    const imageUrl = await uploadToCloudinary(buffer);
+    const { url, imageUrl } = await processCommand(command);
     await sendMMS(imageUrl, url);
     res.json({ success: true, imageUrl, url });
   } catch (err) {
@@ -235,18 +291,16 @@ app.post('/webhook', async (req, res) => {
     twiml.message('Got it! Taking screenshot, give me a few seconds...');
     res.type('text/xml').send(twiml.toString());
 
-    const url = await parseCommand(incomingMsg);
-    const buffer = await takeScreenshot(url);
-    const imageUrl = await uploadToCloudinary(buffer);
+    const { imageUrl } = await processCommand(incomingMsg);
 
-    await client.messages.create({
+    await twilioClient.messages.create({
       from: process.env.TWILIO_PHONE_NUMBER,
       to: from,
       mediaUrl: [imageUrl],
     });
   } catch (err) {
     console.error(err);
-    await client.messages.create({
+    await twilioClient.messages.create({
       from: process.env.TWILIO_PHONE_NUMBER,
       to: from,
       body: 'Sorry, something went wrong. Try again!',
@@ -255,4 +309,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  startGmailPolling();
+});
