@@ -3,6 +3,14 @@ const express = require('express');
 const twilio = require('twilio');
 const puppeteer = require('puppeteer');
 const cloudinary = require('cloudinary').v2;
+const { execSync } = require('child_process');
+
+try {
+  const chromePath = execSync('find /opt/render/.cache/puppeteer -name "chrome" -type f').toString().trim();
+  console.log('Chrome found at:', chromePath);
+} catch (e) {
+  console.log('Chrome not found:', e.message);
+}
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
