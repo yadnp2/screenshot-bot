@@ -26,7 +26,7 @@ async function sendMMS(imageUrl, caption) {
   const sendEmail = async () => {
     return await resend.emails.send({
       from: 'Screenshot Bot <onboarding@resend.dev>',
-      to: `${process.env.VERIZON_NUMBER}@mypixmessages.com`,
+      to: process.env.GMAIL_USER,
       subject: '',
       text: caption || '',
       attachments: [
@@ -266,19 +266,11 @@ app.post('/sms', async (req, res) => {
 
   try {
     const { url, imageUrl } = await processCommand(command);
-    
-    // Send image URL to Zapier webhook
-    await fetch(process.env.ZAPIER_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageUrl, url }),
-    });
-
-    console.log('Screenshot sent to Zapier for:', command);
+    await sendMMS(imageUrl, url);
+    console.log('Screenshot sent for:', command);
   } catch (err) {
     console.error('Error processing command:', err.message);
   }
-});
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body?.trim();
