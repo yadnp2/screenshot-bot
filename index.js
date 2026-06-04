@@ -367,7 +367,11 @@ app.post('/webhook', async (req, res) => {
 
 app.post('/sms', async (req, res) => {
   console.log('Full request body:', JSON.stringify(req.body));
-  const command = req.body.command?.trim();
+  const raw = (req.body.command || req.body.Command || '').trim();
+// Parse "Message: xxx" from the SMS forward format
+const messageMatch = raw.match(/Message:\s*(.+?)(\r?\n|$)/i);
+const command = messageMatch ? messageMatch[1].trim() : raw;
+console.log('Parsed command:', command);
   console.log('Received command via Zapier:', command);
   
   if (!command) {
