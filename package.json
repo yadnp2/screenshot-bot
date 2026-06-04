@@ -12,6 +12,7 @@
     "nodemailer": "^6.9.0",
     "node-fetch": "^2.7.0",
     "imapflow": "^1.0.0",
+    "@sendgrid/mail": "^7.7.0",
     "twilio": "^4.0.0"
   }
 }
