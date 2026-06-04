@@ -366,6 +366,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 app.post('/sms', async (req, res) => {
+  console.log('Full request body:', JSON.stringify(req.body));
   const command = req.body.command?.trim();
   console.log('Received command via Zapier:', command);
   
