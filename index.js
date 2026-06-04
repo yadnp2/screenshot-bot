@@ -365,6 +365,25 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
+app.post('/sms', async (req, res) => {
+  const command = req.body.command?.trim();
+  console.log('Received command via Zapier:', command);
+  
+  if (!command) {
+    return res.json({ success: false, error: 'No command received' });
+  }
+
+  res.json({ success: true, message: 'Processing...' });
+
+  try {
+    const { url, imageUrl } = await processCommand(command);
+    await sendMMS(imageUrl, url);
+    console.log('Screenshot sent for:', command);
+  } catch (err) {
+    console.error('Error processing command:', err.message);
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
