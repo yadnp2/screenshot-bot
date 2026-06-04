@@ -3,7 +3,7 @@ const express = require('express');
 const twilio = require('twilio');
 const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
-const { ImapFlow } = require('imapflow');
+const { Resend } = require('resend');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -16,33 +16,37 @@ cloudinary.config({
 });
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-
-const sgMail = require('@sendgrid/mail');
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function sendMMS(imageUrl, caption) {
-  const msg = {
-    to: `${process.env.VERIZON_NUMBER}@mypixmessages.com`,
-    from: process.env.GMAIL_USER,
-    subject: '',
-    text: caption || '',
-    attachments: [
-      {
-        content: await fetch(imageUrl).then(r => r.buffer()).then(b => b.toString('base64')),
-        filename: 'screenshot.jpg',
-        type: 'image/jpeg',
-        disposition: 'attachment',
-      },
-    ],
+  // Download image and convert to base64
+  const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
+  const base64Image = imageBuffer.toString('base64');
+
+  const sendEmail = async () => {
+    return await resend.emails.send({
+      from: 'Screenshot Bot <onboarding@resend.dev>',
+      to: `${process.env.VERIZON_NUMBER}@mypixmessages.com`,
+      subject: '',
+      text: caption || '',
+      attachments: [
+        {
+          filename: 'screenshot.jpg',
+          content: base64Image,
+        },
+      ],
+    });
   };
 
   try {
-    await sgMail.send(msg);
+    const result = await sendEmail();
+    if (result.error) throw new Error(result.error.message);
     console.log('MMS sent successfully');
   } catch (err) {
     console.log('First attempt failed, retrying...', err.message);
     await new Promise(r => setTimeout(r, 3000));
-    await sgMail.send(msg);
+    const result = await sendEmail();
+    if (result.error) throw new Error(result.error.message);
   }
 }
 
@@ -68,52 +72,32 @@ async function parseUrl(text) {
     return `https://www.youtube.com/results?search_query=${text.slice(3).trim().replace(/ /g, '+')}`;
   }
 
-  // DuckDuckGo Instant Answer API to find real URL
-  try {
-    const query = encodeURIComponent(text);
-    const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${query}&format=json&no_redirect=1&no_html=1`);
-    const ddgData = await ddgRes.json();
+  // Direct site lookup
+  const directSites = {
+    'fox news': 'https://www.foxnews.com',
+    'cnn': 'https://www.cnn.com',
+    'bbc': 'https://www.bbc.com',
+    'nbc': 'https://www.nbcnews.com',
+    'abc news': 'https://abcnews.go.com',
+    'nyt': 'https://www.nytimes.com',
+    'new york times': 'https://www.nytimes.com',
+    'washington post': 'https://www.washingtonpost.com',
+    'espn': 'https://www.espn.com',
+    'weather': 'https://weather.com',
+    'amazon': 'https://www.amazon.com',
+    'ebay': 'https://www.ebay.com',
+    'netflix': 'https://www.netflix.com',
+    'instagram': 'https://www.instagram.com',
+    'facebook': 'https://www.facebook.com',
+    'tiktok': 'https://www.tiktok.com',
+  };
 
-    if (ddgData.AbstractURL && ddgData.AbstractURL.startsWith('http')) {
-      console.log('DDG AbstractURL:', ddgData.AbstractURL);
-      return ddgData.AbstractURL;
-    }
-
-    // Skip Wikipedia disambiguation pages
-    if (ddgData.AbstractURL && 
-        ddgData.AbstractURL.startsWith('http') && 
-        !ddgData.AbstractURL.includes('disambiguation') &&
-        !ddgData.AbstractURL.includes('wikipedia.org')) {
-      console.log('DDG AbstractURL:', ddgData.AbstractURL);
-      return ddgData.AbstractURL;
-    }
-
-    // Try official website from infobox
-    if (ddgData.Infobox && ddgData.Infobox.content) {
-      const website = ddgData.Infobox.content.find(i => i.label === 'Website' || i.label === 'Official website');
-      if (website && website.value && website.value.startsWith('http')) {
-        console.log('DDG Infobox website:', website.value);
-        return website.value;
-      }
-    }
-
-    // Try related topics but skip Wikipedia
-    if (ddgData.RelatedTopics && ddgData.RelatedTopics.length > 0) {
-      for (const topic of ddgData.RelatedTopics) {
-        if (topic.FirstURL && 
-            topic.FirstURL.startsWith('http') && 
-            !topic.FirstURL.includes('wikipedia.org') &&
-            !topic.FirstURL.includes('duckduckgo.com')) {
-          console.log('DDG RelatedTopic URL:', topic.FirstURL);
-          return topic.FirstURL;
-        }
-      }
-    }
-  } catch (err) {
-    console.log('DDG API error:', err.message);
+  const lowerText = text.toLowerCase();
+  if (directSites[lowerText]) {
+    return directSites[lowerText];
   }
 
-  // Last resort — Bing search screenshot
+  // Bing search fallback
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
@@ -134,9 +118,9 @@ async function takeScreenshot(url) {
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
   const controller = new AbortController();
-const timeout = setTimeout(() => controller.abort(), 25000);
-const response = await fetch(screenshotUrl, { signal: controller.signal });
-clearTimeout(timeout);
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  const response = await fetch(screenshotUrl, { signal: controller.signal });
+  clearTimeout(timeout);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -166,75 +150,6 @@ async function processCommand(command) {
   const buffer = await takeScreenshot(url);
   const imageUrl = await uploadToCloudinary(buffer);
   return { url, imageUrl };
-}
-
-async function startGmailPolling() {
-  console.log('Starting Gmail IMAP polling...');
-
-  const checkMail = async () => {
-    const client = new ImapFlow({
-      host: 'imap.gmail.com',
-      port: 993,
-      secure: true,
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,
-      },
-      logger: false,
-      tls: {
-        rejectUnauthorized: false
-      },
-      socketTimeout: 30000,
-      connectionTimeout: 30000,
-    });
-
-    try {
-      await client.connect();
-      const lock = await client.getMailboxLock('INBOX');
-
-      try {
-        const messages = await client.search({
-          unseen: true,
-          from: `${process.env.VERIZON_NUMBER}@vtext.com`,
-        });
-
-        for (const uid of messages) {
-          const message = await client.fetchOne(uid, { source: true, envelope: true });
-          const subject = message.envelope.subject || '';
-          const command = subject.trim();
-
-          console.log('Received SMS command:', command);
-          await client.messageFlagsAdd(uid, ['\\Seen']);
-
-          if (command) {
-            try {
-              const { url, imageUrl } = await processCommand(command);
-              await sendMMS(imageUrl, url);
-              console.log('Screenshot sent for:', command);
-            } catch (err) {
-              console.error('Error processing command:', err.message);
-              await sendMMS(null, `Sorry, could not get screenshot for: ${command}`);
-            }
-          }
-        }
-      } finally {
-        lock.release();
-      }
-
-      await client.logout();
-    } catch (err) {
-      console.error('IMAP error:', err.message);
-    }
-  };
-
-  setInterval(async () => {
-  try {
-    await checkMail();
-  } catch (err) {
-    console.error('Poll cycle error:', err.message);
-  }
-}, 15000);
-checkMail();
 }
 
 app.get('/', (req, res) => {
@@ -336,6 +251,28 @@ app.post('/test-mms', async (req, res) => {
   }
 });
 
+app.post('/sms', async (req, res) => {
+  console.log('Full request body:', JSON.stringify(req.body));
+  const raw = (req.body.command || req.body.Command || '').trim();
+  const messageMatch = raw.match(/Message:\s*(.+?)(\r?\n|$)/i);
+  const command = messageMatch ? messageMatch[1].trim() : raw;
+  console.log('Parsed command:', command);
+
+  if (!command) {
+    return res.json({ success: false, error: 'No command received' });
+  }
+
+  res.json({ success: true, message: 'Processing...' });
+
+  try {
+    const { url, imageUrl } = await processCommand(command);
+    await sendMMS(imageUrl, url);
+    console.log('Screenshot sent for:', command);
+  } catch (err) {
+    console.error('Error processing command:', err.message);
+  }
+});
+
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body?.trim();
   const from = req.body.From;
@@ -362,32 +299,7 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-app.post('/sms', async (req, res) => {
-  console.log('Full request body:', JSON.stringify(req.body));
-  const raw = (req.body.command || req.body.Command || '').trim();
-// Parse "Message: xxx" from the SMS forward format
-const messageMatch = raw.match(/Message:\s*(.+?)(\r?\n|$)/i);
-const command = messageMatch ? messageMatch[1].trim() : raw;
-console.log('Parsed command:', command);
-  console.log('Received command via Zapier:', command);
-  
-  if (!command) {
-    return res.json({ success: false, error: 'No command received' });
-  }
-
-  res.json({ success: true, message: 'Processing...' });
-
-  try {
-    const { url, imageUrl } = await processCommand(command);
-    await sendMMS(imageUrl, url);
-    console.log('Screenshot sent for:', command);
-  } catch (err) {
-    console.error('Error processing command:', err.message);
-  }
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  startGmailPolling();
 });
