@@ -266,8 +266,15 @@ app.post('/sms', async (req, res) => {
 
   try {
     const { url, imageUrl } = await processCommand(command);
-    await sendMMS(imageUrl, url);
-    console.log('Screenshot sent for:', command);
+    
+    // Send image URL to Zapier webhook
+    await fetch(process.env.ZAPIER_WEBHOOK_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageUrl, url }),
+    });
+
+    console.log('Screenshot sent to Zapier for:', command);
   } catch (err) {
     console.error('Error processing command:', err.message);
   }
