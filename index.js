@@ -82,11 +82,34 @@ async function parseUrl(text) {
       return ddgData.AbstractURL;
     }
 
+    // Skip Wikipedia disambiguation pages
+    if (ddgData.AbstractURL && 
+        ddgData.AbstractURL.startsWith('http') && 
+        !ddgData.AbstractURL.includes('disambiguation') &&
+        !ddgData.AbstractURL.includes('wikipedia.org')) {
+      console.log('DDG AbstractURL:', ddgData.AbstractURL);
+      return ddgData.AbstractURL;
+    }
+
+    // Try official website from infobox
+    if (ddgData.Infobox && ddgData.Infobox.content) {
+      const website = ddgData.Infobox.content.find(i => i.label === 'Website' || i.label === 'Official website');
+      if (website && website.value && website.value.startsWith('http')) {
+        console.log('DDG Infobox website:', website.value);
+        return website.value;
+      }
+    }
+
+    // Try related topics but skip Wikipedia
     if (ddgData.RelatedTopics && ddgData.RelatedTopics.length > 0) {
-      const first = ddgData.RelatedTopics[0];
-      if (first.FirstURL && first.FirstURL.startsWith('http')) {
-        console.log('DDG RelatedTopic URL:', first.FirstURL);
-        return first.FirstURL;
+      for (const topic of ddgData.RelatedTopics) {
+        if (topic.FirstURL && 
+            topic.FirstURL.startsWith('http') && 
+            !topic.FirstURL.includes('wikipedia.org') &&
+            !topic.FirstURL.includes('duckduckgo.com')) {
+          console.log('DDG RelatedTopic URL:', topic.FirstURL);
+          return topic.FirstURL;
+        }
       }
     }
   } catch (err) {
@@ -161,6 +184,11 @@ async function startGmailPolling() {
         pass: process.env.GMAIL_APP_PASSWORD,
       },
       logger: false,
+      tls: {
+        rejectUnauthorized: false
+      },
+      socketTimeout: 30000,
+      connectionTimeout: 30000,
     });
 
     try {
@@ -202,8 +230,14 @@ async function startGmailPolling() {
     }
   };
 
-  setInterval(checkMail, 15000);
-  checkMail();
+  setInterval(async () => {
+  try {
+    await checkMail();
+  } catch (err) {
+    console.error('Poll cycle error:', err.message);
+  }
+}, 15000);
+checkMail();
 }
 
 app.get('/', (req, res) => {
