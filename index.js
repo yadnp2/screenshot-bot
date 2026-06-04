@@ -70,6 +70,9 @@ async function parseUrl(text) {
   if (text.toLowerCase().startsWith('yt ')) {
     return `https://www.youtube.com/results?search_query=${text.slice(3).trim().replace(/ /g, '+')}`;
   }
+  if (text.toLowerCase().startsWith('img ')) {
+    return `https://www.bing.com/images/search?q=${encodeURIComponent(text.slice(4).trim())}&safeSearch=Off`;
+  }
 
   const directSites = {
     'fox news': 'https://www.foxnews.com',
@@ -174,9 +177,10 @@ app.get('/', (req, res) => {
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
+        <code>img tuna</code> — Bing image search<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: fox news" />
+      <input type="text" id="cmd" placeholder="Try: img tuna" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
