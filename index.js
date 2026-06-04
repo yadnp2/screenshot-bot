@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const twilio = require('twilio');
 const cloudinary = require('cloudinary').v2;
-const nodemailer = require('nodemailer');
 const fetch = require('node-fetch');
 const { ImapFlow } = require('imapflow');
 
@@ -18,34 +17,32 @@ cloudinary.config({
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-});
+const sgMail = require('@sendgrid/mail');
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 async function sendMMS(imageUrl, caption) {
-  const mailOptions = {
-    from: process.env.GMAIL_USER,
+  const msg = {
     to: `${process.env.VERIZON_NUMBER}@mypixmessages.com`,
+    from: process.env.GMAIL_USER,
     subject: '',
     text: caption || '',
     attachments: [
       {
+        content: await fetch(imageUrl).then(r => r.buffer()).then(b => b.toString('base64')),
         filename: 'screenshot.jpg',
-        path: imageUrl,
+        type: 'image/jpeg',
+        disposition: 'attachment',
       },
     ],
   };
+
   try {
-    await transporter.sendMail(mailOptions);
+    await sgMail.send(msg);
     console.log('MMS sent successfully');
   } catch (err) {
     console.log('First attempt failed, retrying...', err.message);
     await new Promise(r => setTimeout(r, 3000));
-    await transporter.sendMail(mailOptions);
+    await sgMail.send(msg);
   }
 }
 
