@@ -19,7 +19,6 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function sendMMS(imageUrl, caption) {
-  // Download image and convert to base64
   const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
   const base64Image = imageBuffer.toString('base64');
 
@@ -27,7 +26,7 @@ async function sendMMS(imageUrl, caption) {
     return await resend.emails.send({
       from: 'Screenshot Bot <onboarding@resend.dev>',
       to: process.env.GMAIL_USER,
-      subject: '',
+      subject: 'Screenshot',
       text: caption || '',
       attachments: [
         {
@@ -40,13 +39,13 @@ async function sendMMS(imageUrl, caption) {
 
   try {
     const result = await sendEmail();
-    if (result.error) throw new Error(result.error.message);
+    if (result.error) throw new Error(JSON.stringify(result.error));
     console.log('MMS sent successfully');
   } catch (err) {
     console.log('First attempt failed, retrying...', err.message);
     await new Promise(r => setTimeout(r, 3000));
     const result = await sendEmail();
-    if (result.error) throw new Error(result.error.message);
+    if (result.error) throw new Error(JSON.stringify(result.error));
   }
 }
 
@@ -72,7 +71,6 @@ async function parseUrl(text) {
     return `https://www.youtube.com/results?search_query=${text.slice(3).trim().replace(/ /g, '+')}`;
   }
 
-  // Direct site lookup
   const directSites = {
     'fox news': 'https://www.foxnews.com',
     'cnn': 'https://www.cnn.com',
@@ -97,7 +95,6 @@ async function parseUrl(text) {
     return directSites[lowerText];
   }
 
-  // Bing search fallback
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
@@ -271,6 +268,7 @@ app.post('/sms', async (req, res) => {
   } catch (err) {
     console.error('Error processing command:', err.message);
   }
+});
 
 app.post('/webhook', async (req, res) => {
   const incomingMsg = req.body.Body?.trim();
