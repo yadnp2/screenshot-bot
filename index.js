@@ -49,7 +49,7 @@ async function sendMMS(imageUrl, caption) {
   }
 }
 
-function parseUrl(text) {
+async function parseUrl(text) {
   text = text.trim();
 
   if (text.toLowerCase().startsWith('ss http')) {
@@ -71,12 +71,34 @@ function parseUrl(text) {
     return `https://www.youtube.com/results?search_query=${text.slice(3).trim().replace(/ /g, '+')}`;
   }
 
-  // DuckDuckGo "I'm Feeling Lucky" style — just build search URL
-  return `https://www.google.com/search?q=${encodeURIComponent(text)}`;
+  // DuckDuckGo Instant Answer API to find real URL
+  try {
+    const query = encodeURIComponent(text);
+    const ddgRes = await fetch(`https://api.duckduckgo.com/?q=${query}&format=json&no_redirect=1&no_html=1`);
+    const ddgData = await ddgRes.json();
+
+    if (ddgData.AbstractURL && ddgData.AbstractURL.startsWith('http')) {
+      console.log('DDG AbstractURL:', ddgData.AbstractURL);
+      return ddgData.AbstractURL;
+    }
+
+    if (ddgData.RelatedTopics && ddgData.RelatedTopics.length > 0) {
+      const first = ddgData.RelatedTopics[0];
+      if (first.FirstURL && first.FirstURL.startsWith('http')) {
+        console.log('DDG RelatedTopic URL:', first.FirstURL);
+        return first.FirstURL;
+      }
+    }
+  } catch (err) {
+    console.log('DDG API error:', err.message);
+  }
+
+  // Last resort — Bing search screenshot
+  return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
 async function takeScreenshot(url) {
-  console.log('Using ScreenshotOne key:', process.env.SCREENSHOTONE_KEY);
+  console.log('Taking screenshot of:', url);
   const params = new URLSearchParams({
     access_key: process.env.SCREENSHOTONE_KEY,
     url: url,
@@ -87,19 +109,16 @@ async function takeScreenshot(url) {
     block_ads: 'true',
     block_cookie_banners: 'true',
     block_trackers: 'true',
+    ignore_host_errors: 'true',
   });
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
-console.log('Screenshot URL:', screenshotUrl);
-const response = await fetch(screenshotUrl);
-if (!response.ok) {
-  const errorText = await response.text();
-  console.log('API error response:', errorText);
-  throw new Error(`Screenshot API error: ${errorText}`);
-}
+  const response = await fetch(screenshotUrl);
 
   if (!response.ok) {
-    throw new Error(`Screenshot API error: ${response.statusText}`);
+    const errorText = await response.text();
+    console.log('API error response:', errorText);
+    throw new Error(`Screenshot API error: ${errorText}`);
   }
 
   const buffer = await response.buffer();
@@ -120,13 +139,12 @@ async function uploadToCloudinary(buffer) {
 }
 
 async function processCommand(command) {
-  const url = parseUrl(command);
+  const url = await parseUrl(command);
   const buffer = await takeScreenshot(url);
   const imageUrl = await uploadToCloudinary(buffer);
   return { url, imageUrl };
 }
 
-// Gmail IMAP polling
 async function startGmailPolling() {
   console.log('Starting Gmail IMAP polling...');
 
@@ -147,7 +165,6 @@ async function startGmailPolling() {
       const lock = await client.getMailboxLock('INBOX');
 
       try {
-        // Search for unread emails from vtext
         const messages = await client.search({
           unseen: true,
           from: `${process.env.VERIZON_NUMBER}@vtext.com`,
@@ -159,8 +176,6 @@ async function startGmailPolling() {
           const command = subject.trim();
 
           console.log('Received SMS command:', command);
-
-          // Mark as read
           await client.messageFlagsAdd(uid, ['\\Seen']);
 
           if (command) {
@@ -184,12 +199,10 @@ async function startGmailPolling() {
     }
   };
 
-  // Check every 15 seconds
   setInterval(checkMail, 15000);
-  checkMail(); // run immediately on startup
+  checkMail();
 }
 
-// Web test interface
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -215,7 +228,7 @@ app.get('/', (req, res) => {
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
-        <code>fox news</code> — anything else = DuckDuckGo it
+        <code>fox news</code> — anything else = smart search
       </div>
       <input type="text" id="cmd" placeholder="Try: fox news" />
       <button onclick="run()">Test in Browser</button>
