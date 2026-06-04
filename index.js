@@ -113,7 +113,10 @@ async function takeScreenshot(url) {
   });
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
-  const response = await fetch(screenshotUrl);
+  const controller = new AbortController();
+const timeout = setTimeout(() => controller.abort(), 25000);
+const response = await fetch(screenshotUrl, { signal: controller.signal });
+clearTimeout(timeout);
 
   if (!response.ok) {
     const errorText = await response.text();
