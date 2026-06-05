@@ -6,6 +6,14 @@ const fetch = require('node-fetch');
 const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
 
+const { execSync } = require('child_process');
+try {
+  const path = execSync('find /opt/render/project/src/.cache -name "chrome" -type f 2>/dev/null').toString().trim();
+  console.log('Chrome found at:', path);
+} catch(e) {
+  console.log('Chrome not found:', e.message);
+}
+
 const app = express();
 app.use(express.urlencoded({ extended: false }));
 app.use(express.json());
