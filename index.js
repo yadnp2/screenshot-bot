@@ -105,6 +105,7 @@ async function parseUrl(text) {
 async function takeScreenshot(url) {
   console.log('Taking screenshot of:', url);
   const browser = await puppeteer.launch({
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
