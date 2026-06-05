@@ -7,12 +7,16 @@ const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
 const { execSync } = require('child_process');
 
-try {
-  execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
-  console.log('Chrome installed successfully');
-} catch(e) {
-  console.log('Chrome install error:', e.message);
-}
+// Install Chrome in background without blocking server startup
+setTimeout(() => {
+  try {
+    console.log('Installing Chrome...');
+    execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
+    console.log('Chrome installed successfully');
+  } catch(e) {
+    console.log('Chrome install error:', e.message);
+  }
+}, 0);
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
