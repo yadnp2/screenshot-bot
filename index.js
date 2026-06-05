@@ -5,18 +5,6 @@ const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
 const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
-const { execSync } = require('child_process');
-
-// Install Chrome in background without blocking server startup
-setTimeout(() => {
-  try {
-    console.log('Installing Chrome...');
-    execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
-    console.log('Chrome installed successfully');
-  } catch(e) {
-    console.log('Chrome install error:', e.message);
-  }
-}, 0);
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -114,28 +102,60 @@ async function parseUrl(text) {
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
-async function takeScreenshot(url) {
-  console.log('Taking screenshot of:', url);
-  const browser = await puppeteer.launch({
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-    ],
-    headless: 'new',
+async function takeScreenshotBrowserless(url) {
+  console.log('Trying Browserless for:', url);
+  const browser = await puppeteer.connect({
+    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${process.env.BROWSERLESS_API_KEY}`,
   });
 
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
     return buffer;
   } finally {
     await browser.close();
+  }
+}
+
+async function takeScreenshotOne(url) {
+  console.log('Trying ScreenshotOne for:', url);
+  const params = new URLSearchParams({
+    access_key: process.env.SCREENSHOTONE_KEY,
+    url: url,
+    viewport_width: '1280',
+    viewport_height: '800',
+    format: 'jpg',
+    image_quality: '80',
+    block_ads: 'true',
+    block_cookie_banners: 'true',
+    block_trackers: 'true',
+    ignore_host_errors: 'true',
+  });
+
+  const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 25000);
+  const response = await fetch(screenshotUrl, { signal: controller.signal });
+  clearTimeout(timeout);
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`ScreenshotOne error: ${errorText}`);
+  }
+
+  return await response.buffer();
+}
+
+async function takeScreenshot(url) {
+  console.log('Taking screenshot of:', url);
+  try {
+    return await takeScreenshotBrowserless(url);
+  } catch (err) {
+    console.log('Browserless failed, falling back to ScreenshotOne:', err.message);
+    return await takeScreenshotOne(url);
   }
 }
 
