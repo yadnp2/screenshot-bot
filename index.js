@@ -5,13 +5,13 @@ const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
 const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
-
 const { execSync } = require('child_process');
+
 try {
-  const path = execSync('find /opt/render/.cache -name "chrome" -type f 2>/dev/null').toString().trim();
-  console.log('Chrome found at:', path);
+  execSync('npx puppeteer browsers install chrome', { stdio: 'inherit' });
+  console.log('Chrome installed successfully');
 } catch(e) {
-  console.log('Chrome not found:', e.message);
+  console.log('Chrome install error:', e.message);
 }
 
 const app = express();
