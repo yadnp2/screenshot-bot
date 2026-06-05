@@ -8,7 +8,7 @@ const puppeteer = require('puppeteer');
 
 const { execSync } = require('child_process');
 try {
-  const path = execSync('find /opt/render/project/src/.cache -name "chrome" -type f 2>/dev/null').toString().trim();
+  const path = execSync('find /opt/render/.cache -name "chrome" -type f 2>/dev/null').toString().trim();
   console.log('Chrome found at:', path);
 } catch(e) {
   console.log('Chrome not found:', e.message);
