@@ -4,6 +4,7 @@ const twilio = require('twilio');
 const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
 const { Resend } = require('resend');
+const puppeteer = require('puppeteer');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -103,33 +104,26 @@ async function parseUrl(text) {
 
 async function takeScreenshot(url) {
   console.log('Taking screenshot of:', url);
-  const params = new URLSearchParams({
-    access_key: process.env.SCREENSHOTONE_KEY,
-    url: url,
-    viewport_width: '1280',
-    viewport_height: '800',
-    format: 'jpg',
-    image_quality: '80',
-    block_ads: 'true',
-    block_cookie_banners: 'true',
-    block_trackers: 'true',
-    ignore_host_errors: 'true',
+  const browser = await puppeteer.launch({
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+    ],
+    headless: 'new',
   });
 
-  const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
-  const response = await fetch(screenshotUrl, { signal: controller.signal });
-  clearTimeout(timeout);
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.log('API error response:', errorText);
-    throw new Error(`Screenshot API error: ${errorText}`);
+  try {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1280, height: 800 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
+    return buffer;
+  } finally {
+    await browser.close();
   }
-
-  const buffer = await response.buffer();
-  return buffer;
 }
 
 async function uploadToCloudinary(buffer) {
@@ -180,7 +174,7 @@ app.get('/', (req, res) => {
         <code>img tuna</code> — Bing image search<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: img tuna" />
+      <input type="text" id="cmd" placeholder="Try: fox news" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
