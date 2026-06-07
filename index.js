@@ -53,11 +53,23 @@ async function sendMMS(imageUrl, caption) {
 async function parseUrl(text) {
   text = text.trim();
 
+  // Auto-detect www. URLs
+  if (text.toLowerCase().startsWith('www.')) {
+    return `https://${text}`;
+  }
+
   if (text.toLowerCase().startsWith('ss http')) {
     return text.slice(3).trim();
   }
+
+  // Also handle ss www.
+  if (text.toLowerCase().startsWith('ss www.')) {
+    return `https://${text.slice(3).trim()}`;
+  }
+
   if (text.toLowerCase().startsWith('x @')) {
-    return `https://x.com/${text.slice(3).trim()}`;
+    const username = text.slice(3).trim().split(' ')[0];
+    return `https://x.com/${username}`;
   }
   if (text.toLowerCase().startsWith('x http')) {
     return text.slice(2).trim();
@@ -116,8 +128,14 @@ async function takeScreenshotBrowserless(url) {
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
     );
     await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    // Extra wait for any lazy-loaded content
     await new Promise(r => setTimeout(r, 2000));
+
+    // Scroll down for X profiles to show posts
+    if (url.includes('x.com') || url.includes('twitter.com')) {
+      await page.evaluate(() => window.scrollBy(0, 500));
+      await new Promise(r => setTimeout(r, 1000));
+    }
+
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
@@ -139,6 +157,11 @@ async function takeScreenshotOne(url) {
     ignore_host_errors: 'true',
     delay: '2000',
   });
+
+  // Scroll down for X profiles
+  if (url.includes('x.com') || url.includes('twitter.com')) {
+    params.append('scroll_y', '500');
+  }
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
   const controller = new AbortController();
@@ -204,15 +227,16 @@ app.get('/', (req, res) => {
       <h2>📸 Screenshot Bot Tester</h2>
       <div class="commands">
         <strong>Commands:</strong><br>
+        <code>www.example.com</code> — any website directly<br>
         <code>ss https://example.com</code> — exact URL<br>
-        <code>x @username</code> — X/Twitter profile<br>
+        <code>x @username</code> — X/Twitter posts<br>
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
         <code>img tuna</code> — Bing image search<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: fox news" />
+      <input type="text" id="cmd" placeholder="Try: www.foxnews.com" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
