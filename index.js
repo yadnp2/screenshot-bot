@@ -122,7 +122,7 @@ async function takeScreenshotBrowserless(url) {
     browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
   try {
-   await page = await browser.newPage();
+   const page = await browser.newPage();
    await page.setCookie({
     name: 'SRCHHPGUSR',
     value: 'ADLT=OFF',
