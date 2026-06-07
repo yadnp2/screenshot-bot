@@ -122,11 +122,11 @@ async function takeScreenshotBrowserless(url) {
     browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
   try {
-   const page = await browser.newPage();
-   await page.setCookie({
-    name: 'SRCHHPGUSR',
+   name page.setCookie({
+    name 'SRCHHPGUSR',
     value: 'ADLT=OFF',
-    value: '.bing.com',
+    domain '.bing.com',
+    url: 'https://www.bing.com',
   });
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent(
