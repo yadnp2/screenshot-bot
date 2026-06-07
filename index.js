@@ -335,3 +335,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+console.log('TEST_VAR:', process.env.TEST_VAR);
+console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
