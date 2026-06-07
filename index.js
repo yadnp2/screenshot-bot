@@ -110,7 +110,7 @@ async function takeScreenshotBrowserless(url) {
 
   try {
     const page = await browser.newPage();
-    await page.setViewport({ width: 1280, height: 800 });
+    await page.setViewport({ width: 1280, height: 1600 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
@@ -126,7 +126,7 @@ async function takeScreenshotOne(url) {
     access_key: process.env.SCREENSHOTONE_KEY,
     url: url,
     viewport_width: '1280',
-    viewport_height: '800',
+    viewport_height: '1600',
     format: 'jpg',
     image_quality: '80',
     block_ads: 'true',
