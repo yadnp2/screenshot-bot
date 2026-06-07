@@ -19,6 +19,8 @@ cloudinary.config({
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
+
 async function sendMMS(imageUrl, caption) {
   const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
   const base64Image = imageBuffer.toString('base64');
@@ -53,23 +55,11 @@ async function sendMMS(imageUrl, caption) {
 async function parseUrl(text) {
   text = text.trim();
 
-  // Auto-detect www. URLs
-  if (text.toLowerCase().startsWith('www.')) {
-    return `https://${text}`;
-  }
-
   if (text.toLowerCase().startsWith('ss http')) {
     return text.slice(3).trim();
   }
-
-  // Also handle ss www.
-  if (text.toLowerCase().startsWith('ss www.')) {
-    return `https://${text.slice(3).trim()}`;
-  }
-
   if (text.toLowerCase().startsWith('x @')) {
-    const username = text.slice(3).trim().split(' ')[0];
-    return `https://x.com/${username}`;
+    return `https://x.com/${text.slice(3).trim()}`;
   }
   if (text.toLowerCase().startsWith('x http')) {
     return text.slice(2).trim();
@@ -122,25 +112,18 @@ async function takeScreenshotBrowserless(url) {
     browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
   try {
-   name page.setCookie({
-    name 'SRCHHPGUSR',
-    value: 'ADLT=OFF',
-    domain '.bing.com',
-    url: 'https://www.bing.com',
-  });
+    const page = await browser.newPage();
+    await page.setCookie({
+      name: 'SRCHHPGUSR',
+      value: 'ADLT=OFF',
+      domain: '.bing.com',
+      url: 'https://www.bing.com',
+    });
     await page.setViewport({ width: 1280, height: 800 });
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
     );
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await new Promise(r => setTimeout(r, 2000));
-
-    // Scroll down for X profiles to show posts
-    if (url.includes('x.com') || url.includes('twitter.com')) {
-      await page.evaluate(() => window.scrollBy(0, 500));
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
@@ -160,17 +143,11 @@ async function takeScreenshotOne(url) {
     block_cookie_banners: 'true',
     block_trackers: 'true',
     ignore_host_errors: 'true',
-    delay: '2000',
   });
-
-  // Scroll down for X profiles
-  if (url.includes('x.com') || url.includes('twitter.com')) {
-    params.append('scroll_y', '500');
-  }
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 30000);
+  const timeout = setTimeout(() => controller.abort(), 25000);
   const response = await fetch(screenshotUrl, { signal: controller.signal });
   clearTimeout(timeout);
 
@@ -232,16 +209,15 @@ app.get('/', (req, res) => {
       <h2>📸 Screenshot Bot Tester</h2>
       <div class="commands">
         <strong>Commands:</strong><br>
-        <code>www.example.com</code> — any website directly<br>
         <code>ss https://example.com</code> — exact URL<br>
-        <code>x @username</code> — X/Twitter posts<br>
+        <code>x @username</code> — X/Twitter profile<br>
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
         <code>img tuna</code> — Bing image search<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: www.foxnews.com" />
+      <input type="text" id="cmd" placeholder="Try: fox news" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
