@@ -19,6 +19,8 @@ cloudinary.config({
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
+
 async function sendMMS(imageUrl, caption) {
   const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
   const base64Image = imageBuffer.toString('base64');
@@ -192,7 +194,7 @@ app.get('/', (req, res) => {
         input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
         button { padding: 12px 24px; font-size: 16px; background: #0066ff; color: white; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px; }
         #result { margin-top: 20px; }
-        #result img { max-width: 100%; border-radius: 8page; margin-top: 10px; }
+        #result img { max-width: 100%; border-radius: 8px; margin-top: 10px; }
         #status { color: #666; font-style: italic; margin-top: 10px; }
         .commands { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.8; }
       </style>
