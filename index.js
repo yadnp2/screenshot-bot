@@ -19,8 +19,6 @@ cloudinary.config({
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
-
 async function sendMMS(imageUrl, caption) {
   const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
   const base64Image = imageBuffer.toString('base64');
@@ -117,7 +115,9 @@ async function takeScreenshotBrowserless(url) {
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
     );
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+    // Extra wait for any lazy-loaded content
+    await new Promise(r => setTimeout(r, 2000));
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
@@ -137,11 +137,12 @@ async function takeScreenshotOne(url) {
     block_cookie_banners: 'true',
     block_trackers: 'true',
     ignore_host_errors: 'true',
+    delay: '2000',
   });
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 30000);
   const response = await fetch(screenshotUrl, { signal: controller.signal });
   clearTimeout(timeout);
 
@@ -335,6 +336,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
-console.log('TEST_VAR:', process.env.TEST_VAR);
-console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
