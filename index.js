@@ -104,17 +104,19 @@ async function parseUrl(text) {
 
 async function takeScreenshotBrowserless(url) {
   console.log('Trying Browserless for:', url);
+  const token = process.env.BROWSERLESS_API_KEY?.trim();
+  if (!token) throw new Error('Missing BROWSERLESS_API_KEY');
   const browser = await puppeteer.connect({
-    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${process.env.BROWSERLESS_API_KEY}`,
+    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
-
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 800 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
+    await page.setUserAgent(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+    );
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    const buffer = await page.screenshot({ type: 'jpeg', quality: 80 });
-    return buffer;
+    return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
   }
@@ -190,7 +192,7 @@ app.get('/', (req, res) => {
         input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
         button { padding: 12px 24px; font-size: 16px; background: #0066ff; color: white; border: none; border-radius: 6px; cursor: pointer; margin-right: 10px; }
         #result { margin-top: 20px; }
-        #result img { max-width: 100%; border-radius: 8px; margin-top: 10px; }
+        #result img { max-width: 100%; border-radius: 8page; margin-top: 10px; }
         #status { color: #666; font-style: italic; margin-top: 10px; }
         .commands { background: #f5f5f5; padding: 16px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; line-height: 1.8; }
       </style>
