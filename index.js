@@ -110,23 +110,6 @@ async function parseUrl(text) {
 
 async function dismissAgeGate(page) {
   try {
-    // Common age verification button selectors
-    const ageGateSelectors = [
-      'button[id*="age"]',
-      'button[class*="age"]',
-      'button[id*="enter"]',
-      'button[class*="enter"]',
-      'a[id*="enter"]',
-      'a[class*="enter"]',
-      '[id*="age-gate"] button',
-      '[class*="age-gate"] button',
-      '[id*="ageGate"] button',
-      '[class*="ageGate"] button',
-      'button[id*="yes"]',
-      'button[class*="yes"]',
-    ];
-
-    // Also look for buttons with common age gate text
     const clicked = await page.evaluate(() => {
       const texts = [
         'i am 18', 'i am 18+', 'i\'m 18', 'i\'m 18+',
@@ -147,24 +130,8 @@ async function dismissAgeGate(page) {
     });
 
     if (clicked) {
-      console.log('Age gate dismissed via text match');
+      console.log('Age gate dismissed');
       await new Promise(r => setTimeout(r, 2000));
-      return;
-    }
-
-    // Try selectors
-    for (const selector of ageGateSelectors) {
-      try {
-        const el = await page.$(selector);
-        if (el) {
-          await el.click();
-          console.log('Age gate dismissed via selector:', selector);
-          await new Promise(r => setTimeout(r, 2000));
-          return;
-        }
-      } catch (e) {
-        // continue
-      }
     }
   } catch (e) {
     console.log('Age gate dismissal error:', e.message);
@@ -262,7 +229,7 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-      <title>Screenshot Bot Tester</title>
+      <title>Screenshot Bot</title>
       <style>
         body { font-family: sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
         input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
@@ -274,7 +241,6 @@ app.get('/', (req, res) => {
       </style>
     </head>
     <body>
-      <h2>📸 Screenshot Bot Tester</h2>
       <div class="commands">
         <strong>Commands:</strong><br>
         <code>ss https://example.com</code> — exact URL<br>
