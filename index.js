@@ -55,8 +55,12 @@ async function sendMMS(imageUrl, caption) {
 async function parseUrl(text) {
   text = text.trim();
 
-  if (text.toLowerCase().startsWith('ss http')) {
-    return text.slice(3).trim();
+  if (text.toLowerCase().startsWith('ss ')) {
+    let url = text.slice(3).trim();
+    if (!url.startsWith('http')) {
+      url = 'https://' + url;
+    }
+    return url;
   }
   if (text.toLowerCase().startsWith('x @')) {
     return `https://x.com/${text.slice(3).trim()}`;
@@ -104,6 +108,69 @@ async function parseUrl(text) {
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
+async function dismissAgeGate(page) {
+  try {
+    // Common age verification button selectors
+    const ageGateSelectors = [
+      'button[id*="age"]',
+      'button[class*="age"]',
+      'button[id*="enter"]',
+      'button[class*="enter"]',
+      'a[id*="enter"]',
+      'a[class*="enter"]',
+      '[id*="age-gate"] button',
+      '[class*="age-gate"] button',
+      '[id*="ageGate"] button',
+      '[class*="ageGate"] button',
+      'button[id*="yes"]',
+      'button[class*="yes"]',
+    ];
+
+    // Also look for buttons with common age gate text
+    const clicked = await page.evaluate(() => {
+      const texts = [
+        'i am 18', 'i am 18+', 'i\'m 18', 'i\'m 18+',
+        'enter', 'yes', 'yes, i am', 'yes, i\'m',
+        'i am of legal age', 'confirm age', 'verify age',
+        'i am an adult', 'enter site', 'click to enter',
+        'i agree', 'yes, enter'
+      ];
+      const buttons = document.querySelectorAll('button, a, div[role="button"], span[role="button"]');
+      for (const btn of buttons) {
+        const btnText = btn.innerText?.toLowerCase().trim();
+        if (texts.some(t => btnText?.includes(t))) {
+          btn.click();
+          return true;
+        }
+      }
+      return false;
+    });
+
+    if (clicked) {
+      console.log('Age gate dismissed via text match');
+      await new Promise(r => setTimeout(r, 2000));
+      return;
+    }
+
+    // Try selectors
+    for (const selector of ageGateSelectors) {
+      try {
+        const el = await page.$(selector);
+        if (el) {
+          await el.click();
+          console.log('Age gate dismissed via selector:', selector);
+          await new Promise(r => setTimeout(r, 2000));
+          return;
+        }
+      } catch (e) {
+        // continue
+      }
+    }
+  } catch (e) {
+    console.log('Age gate dismissal error:', e.message);
+  }
+}
+
 async function takeScreenshotBrowserless(url) {
   console.log('Trying Browserless for:', url);
   const token = process.env.BROWSERLESS_API_KEY?.trim();
@@ -119,11 +186,12 @@ async function takeScreenshotBrowserless(url) {
       domain: '.bing.com',
       url: 'https://www.bing.com',
     });
-    await page.setViewport({ width: 1280, height: 800 });
+    await page.setViewport({ width: 1280, height: 1600 });
     await page.setUserAgent(
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
     );
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await dismissAgeGate(page);
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
@@ -136,7 +204,7 @@ async function takeScreenshotOne(url) {
     access_key: process.env.SCREENSHOTONE_KEY,
     url: url,
     viewport_width: '1280',
-    viewport_height: '800',
+    viewport_height: '1600',
     format: 'jpg',
     image_quality: '80',
     block_ads: 'true',
@@ -210,6 +278,7 @@ app.get('/', (req, res) => {
       <div class="commands">
         <strong>Commands:</strong><br>
         <code>ss https://example.com</code> — exact URL<br>
+        <code>ss www.example.com</code> — URL without https<br>
         <code>x @username</code> — X/Twitter profile<br>
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
