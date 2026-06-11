@@ -112,17 +112,19 @@ async function dismissAgeGate(page) {
   try {
     const clicked = await page.evaluate(() => {
       const texts = [
-        'i am 18', 'i am 18+', 'i\'m 18', 'i\'m 18+',
-        'enter', 'yes', 'yes, i am', 'yes, i\'m',
+        'i am 18', 'i am 18+', "i'm 18", "i'm 18+",
+        'enter', 'yes', 'yes, i am', "yes, i'm",
         'i am of legal age', 'confirm age', 'verify age',
         'i am an adult', 'enter site', 'click to enter',
-        'i agree', 'yes, enter'
+        'i agree', 'yes, enter', 'continue', 'proceed',
+        'i am over 18', 'i am over 21', 'legal age',
+        'age verification', 'verify', 'confirm'
       ];
-      const buttons = document.querySelectorAll('button, a, div[role="button"], span[role="button"]');
-      for (const btn of buttons) {
-        const btnText = btn.innerText?.toLowerCase().trim();
-        if (texts.some(t => btnText?.includes(t))) {
-          btn.click();
+      const elements = document.querySelectorAll('button, a, div[role="button"], span[role="button"], input[type="button"], input[type="submit"]');
+      for (const el of elements) {
+        const elText = (el.innerText || el.value || '').toLowerCase().trim();
+        if (texts.some(t => elText.includes(t))) {
+          el.click();
           return true;
         }
       }
@@ -131,7 +133,7 @@ async function dismissAgeGate(page) {
 
     if (clicked) {
       console.log('Age gate dismissed');
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 2500));
     }
   } catch (e) {
     console.log('Age gate dismissal error:', e.message);
@@ -142,23 +144,56 @@ async function takeScreenshotBrowserless(url) {
   console.log('Trying Browserless for:', url);
   const token = process.env.BROWSERLESS_API_KEY?.trim();
   if (!token) throw new Error('Missing BROWSERLESS_API_KEY');
+
   const browser = await puppeteer.connect({
-    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
+    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}&stealth=true`,
   });
+
   try {
     const page = await browser.newPage();
+
+    // Set realistic headers
+    await page.setExtraHTTPHeaders({
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+    });
+
+    // Set Bing safe search cookie
     await page.setCookie({
       name: 'SRCHHPGUSR',
       value: 'ADLT=OFF',
       domain: '.bing.com',
       url: 'https://www.bing.com',
     });
+
     await page.setViewport({ width: 1280, height: 1600 });
+
     await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36'
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     );
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+
+    // Hide webdriver detection
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => false });
+      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+      window.chrome = { runtime: {} };
+    });
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    // Wait a bit for dynamic content
+    await new Promise(r => setTimeout(r, 2000));
+
     await dismissAgeGate(page);
+
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
