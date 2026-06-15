@@ -3,6 +3,7 @@ const express = require('express');
 const twilio = require('twilio');
 const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
+const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
 
 const app = express();
@@ -16,8 +17,40 @@ cloudinary.config({
 });
 
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
+
+async function sendMMS(imageUrl, caption) {
+  const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
+  const base64Image = imageBuffer.toString('base64');
+
+  const sendEmail = async () => {
+    return await resend.emails.send({
+      from: 'Screenshot Bot <onboarding@resend.dev>',
+      to: process.env.GMAIL_USER,
+      subject: 'Screenshot',
+      text: caption || '',
+      attachments: [
+        {
+          filename: 'screenshot.jpg',
+          content: base64Image,
+        },
+      ],
+    });
+  };
+
+  try {
+    const result = await sendEmail();
+    if (result.error) throw new Error(JSON.stringify(result.error));
+    console.log('MMS sent successfully');
+  } catch (err) {
+    console.log('First attempt failed, retrying...', err.message);
+    await new Promise(r => setTimeout(r, 3000));
+    const result = await sendEmail();
+    if (result.error) throw new Error(JSON.stringify(result.error));
+  }
+}
 
 async function parseUrl(text) {
   text = text.trim();
@@ -250,6 +283,7 @@ app.get('/', (req, res) => {
       </div>
       <input type="text" id="cmd" placeholder="Try: fox news" />
       <button onclick="run()">Test in Browser</button>
+      <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
       <div id="result"></div>
       <script>
@@ -271,6 +305,24 @@ app.get('/', (req, res) => {
             document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
           }
         }
+        async function runMMS() {
+          const cmd = document.getElementById('cmd').value.trim();
+          if (!cmd) return;
+          document.getElementById('status').innerText = 'Taking screenshot and sending to your phone...';
+          document.getElementById('result').innerHTML = '';
+          const res = await fetch('/test-mms', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ command: cmd })
+          });
+          const data = await res.json();
+          document.getElementById('status').innerText = '';
+          if (data.success) {
+            document.getElementById('result').innerHTML = '<p>✅ Sent to your phone! URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a></p><img src="' + data.imageUrl + '" />';
+          } else {
+            document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
+          }
+        }
         document.getElementById('cmd').addEventListener('keydown', e => { if (e.key === 'Enter') run(); });
       </script>
     </body>
@@ -286,6 +338,40 @@ app.post('/test', async (req, res) => {
   } catch (err) {
     console.error(err);
     res.json({ error: err.message });
+  }
+});
+
+app.post('/test-mms', async (req, res) => {
+  const { command } = req.body;
+  try {
+    const { url, imageUrl } = await processCommand(command);
+    await sendMMS(imageUrl, url);
+    res.json({ success: true, imageUrl, url });
+  } catch (err) {
+    console.error(err);
+    res.json({ error: err.message });
+  }
+});
+
+app.post('/sms', async (req, res) => {
+  console.log('Full request body:', JSON.stringify(req.body));
+  const raw = (req.body.command || req.body.Command || '').trim();
+  const messageMatch = raw.match(/Message:\s*(.+?)(\r?\n|$)/i);
+  const command = messageMatch ? messageMatch[1].trim() : raw;
+  console.log('Parsed command:', command);
+
+  if (!command) {
+    return res.json({ success: false, error: 'No command received' });
+  }
+
+  res.json({ success: true, message: 'Processing...' });
+
+  try {
+    const { url, imageUrl } = await processCommand(command);
+    await sendMMS(imageUrl, url);
+    console.log('Screenshot sent for:', command);
+  } catch (err) {
+    console.error('Error processing command:', err.message);
   }
 });
 
