@@ -115,35 +115,53 @@ async function parseUrl(text) {
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
-async function dismissAgeGate(page) {
+async function dismissOverlay(page) {
   try {
-    const clicked = await page.evaluate(() => {
-      const texts = [
-        'i am 18', 'i am 18+', "i'm 18", "i'm 18+",
-        'enter', 'yes', 'yes, i am', "yes, i'm",
-        'i am of legal age', 'confirm age', 'verify age',
-        'i am an adult', 'enter site', 'click to enter',
-        'i agree', 'yes, enter', 'continue', 'proceed',
-        'i am over 18', 'i am over 21', 'legal age',
-        'age verification', 'verify', 'confirm'
-      ];
-      const elements = document.querySelectorAll('button, a, div[role="button"], span[role="button"], input[type="button"], input[type="submit"]');
-      for (const el of elements) {
-        const elText = (el.innerText || el.value || '').toLowerCase().trim();
-        if (texts.some(t => elText.includes(t))) {
-          el.click();
-          return true;
+    let totalClicked = 0;
+    // Run a couple of passes since dismissing one overlay sometimes reveals another
+    for (let pass = 0; pass < 2; pass++) {
+      const clicked = await page.evaluate(() => {
+        const texts = [
+          // age gates
+          'i am 18', 'i am 18+', "i'm 18", "i'm 18+",
+          'i am of legal age', 'confirm age', 'verify age',
+          'i am an adult', 'enter site', 'click to enter',
+          'i am over 18', 'i am over 21', 'legal age',
+          'age verification',
+          // cookie / consent / terms popups
+          'accept all', 'accept cookies', 'accept', 'i accept',
+          'got it', 'i agree', 'agree', 'allow all', 'allow',
+          'continue', 'proceed', 'ok', 'okay', 'dismiss',
+          'close', 'no thanks', 'not now', 'i understand',
+          'consent', 'agree and continue', 'yes', 'verify', 'confirm'
+        ];
+        const elements = document.querySelectorAll(
+          'button, a, div[role="button"], span[role="button"], input[type="button"], input[type="submit"]'
+        );
+        for (const el of elements) {
+          const elText = (el.innerText || el.value || '').toLowerCase().trim();
+          if (texts.some(t => elText === t || elText.includes(t))) {
+            el.click();
+            return true;
+          }
         }
-      }
-      return false;
-    });
+        return false;
+      });
 
-    if (clicked) {
-      console.log('Age gate dismissed');
-      await new Promise(r => setTimeout(r, 2500));
+      if (clicked) {
+        totalClicked++;
+        await new Promise(r => setTimeout(r, 1500));
+      } else {
+        break;
+      }
+    }
+
+    if (totalClicked > 0) {
+      console.log('Dismissed', totalClicked, 'overlay(s)');
+      await new Promise(r => setTimeout(r, 1000));
     }
   } catch (e) {
-    console.log('Age gate dismissal error:', e.message);
+    console.log('Overlay dismissal error:', e.message);
   }
 }
 
@@ -209,7 +227,7 @@ async function takeScreenshotBrowserless(url) {
     const page = await setupPage(browser);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await waitForImages(page);
-    await dismissAgeGate(page);
+    await dismissOverlay(page);
     console.log('Failed resources:', JSON.stringify(page._failedResources.slice(0, 20)));
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
@@ -262,6 +280,7 @@ async function getPageHtml(url) {
     const page = await setupPage(browser);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     await new Promise(r => setTimeout(r, 1500));
+    await dismissOverlay(page);
     return await page.content();
   } finally {
     await browser.close();
@@ -327,37 +346,49 @@ async function takeTranslateScreenshot(url, lang) {
   return await takeScreenshot(translateUrl);
 }
 
-async function takeCompareScreenshot(urlA, urlB) {
-  console.log('Comparing:', urlA, 'vs', urlB);
-  const [bufA, bufB] = await Promise.all([
-    takeScreenshot(urlA),
-    takeScreenshot(urlB),
-  ]);
+async function takeCompareScreenshot(urls) {
+  console.log('Comparing', urls.length, 'sites:', urls.join(' | '));
 
-  const imgA = sharp(bufA);
-  const imgB = sharp(bufB);
-  const [metaA, metaB] = await Promise.all([imgA.metadata(), imgB.metadata()]);
+  const buffers = await Promise.all(urls.map(u => takeScreenshot(u)));
 
-  const targetWidth = 640;
-  const heightA = Math.round((metaA.height / metaA.width) * targetWidth);
-  const heightB = Math.round((metaB.height / metaB.width) * targetWidth);
-  const maxHeight = Math.max(heightA, heightB);
+  const targetWidth = urls.length <= 2 ? 640 : urls.length === 3 ? 460 : 360;
+  const gap = 8;
 
-  const resizedA = await sharp(bufA).resize(targetWidth, maxHeight, { fit: 'cover', position: 'top' }).toBuffer();
-  const resizedB = await sharp(bufB).resize(targetWidth, maxHeight, { fit: 'cover', position: 'top' }).toBuffer();
+  const metas = await Promise.all(buffers.map(b => sharp(b).metadata()));
+  const heights = metas.map((m, i) => Math.round((m.height / m.width) * targetWidth));
+  const maxHeight = Math.max(...heights);
+
+  const resized = await Promise.all(
+    buffers.map(b =>
+      sharp(b).resize(targetWidth, maxHeight, { fit: 'cover', position: 'top' }).toBuffer()
+    )
+  );
+
+  // Wrap into rows of up to 3 columns for larger comparisons
+  const perRow = urls.length <= 3 ? urls.length : 3;
+  const rows = Math.ceil(urls.length / perRow);
+  const totalWidth = perRow * targetWidth + (perRow - 1) * gap;
+  const totalHeight = rows * maxHeight + (rows - 1) * gap;
+
+  const composite = resized.map((buf, i) => {
+    const row = Math.floor(i / perRow);
+    const col = i % perRow;
+    return {
+      input: buf,
+      left: col * (targetWidth + gap),
+      top: row * (maxHeight + gap),
+    };
+  });
 
   const combined = await sharp({
     create: {
-      width: targetWidth * 2 + 8,
-      height: maxHeight,
+      width: totalWidth,
+      height: totalHeight,
       channels: 3,
       background: { r: 255, g: 255, b: 255 },
     },
   })
-    .composite([
-      { input: resizedA, left: 0, top: 0 },
-      { input: resizedB, left: targetWidth + 8, top: 0 },
-    ])
+    .composite(composite)
     .jpeg({ quality: 85 })
     .toBuffer();
 
@@ -401,14 +432,16 @@ async function processCommand(command) {
     return { url: `translate(${lang}): ${url}`, imageUrl };
   }
 
-  // compare <a> vs <b>
-  const compareMatch = trimmed.match(/^compare\s+(\S+)\s+vs\s+(\S+)$/i);
-  if (compareMatch) {
-    const urlA = normalizeUrl(compareMatch[1]);
-    const urlB = normalizeUrl(compareMatch[2]);
-    const buffer = await takeCompareScreenshot(urlA, urlB);
-    const imageUrl = await uploadToCloudinary(buffer);
-    return { url: `${urlA} vs ${urlB}`, imageUrl };
+  // compare <a> vs <b> vs <c> vs ... (2 or more sites)
+  if (lower.startsWith('compare ')) {
+    const rest = trimmed.slice(8);
+    const parts = rest.split(/\s+vs\s+/i).map(p => p.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      const urls = parts.map(normalizeUrl);
+      const buffer = await takeCompareScreenshot(urls);
+      const imageUrl = await uploadToCloudinary(buffer);
+      return { url: urls.join(' vs '), imageUrl };
+    }
   }
 
   const url = await parseUrl(trimmed);
@@ -422,11 +455,9 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
-  <title>Photo Tools - Image Utility</title>
-  <meta name="description" content="Simple online photo and image utility tool for everyday use.">
-  <meta name="keywords" content="photo, image, tools, utility, pictures">
-  <style>
-      <title>Screenshot Bot</title>
+      <title>Photo Tools - Image Utility</title>
+      <meta name="description" content="Simple online photo and image utility tool for everyday use.">
+      <meta name="keywords" content="photo, image, tools, utility, pictures">
       <style>
         body { font-family: sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
         input { width: 100%; padding: 12px; font-size: 16px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 6px; }
@@ -448,10 +479,10 @@ app.get('/', (req, res) => {
         <code>img tuna</code> — Bing image search<br>
         <code>read https://site.com/article</code> — clean readable article<br>
         <code>translate https://site.com to spanish</code> — translated page<br>
-        <code>compare site1.com vs site2.com</code> — side-by-side screenshot<br>
+        <code>compare site1.com vs site2.com vs site3.com</code> — side-by-side, any number of sites<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: read https://foxnews.com" />
+      <input type="text" id="cmd" placeholder="Try: compare cnn.com vs foxnews.com vs bbc.com" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
