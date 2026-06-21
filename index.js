@@ -95,7 +95,6 @@ async function resolveToHomepage(text) {
   if (looksLikeUrl(text)) {
     return normalizeUrl(text);
   }
-  // fall back to a search results page if we don't recognize the name
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
@@ -239,7 +238,7 @@ async function takeScreenshotBrowserless(url) {
   const browser = await connectBrowser();
   try {
     const page = await setupPage(browser);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await waitForImages(page);
     await dismissOverlay(page);
     console.log('Failed resources:', JSON.stringify(page._failedResources.slice(0, 20)));
@@ -288,69 +287,8 @@ async function takeScreenshot(url) {
 
 // ---- Group 2 features ----
 
-async function getPageHtml(url) {
-  const browser = await connectBrowser();
-  try {
-    const page = await setupPage(browser);
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await new Promise(r => setTimeout(r, 1500));
-    await dismissOverlay(page);
-    return await page.content();
-  } finally {
-    await browser.close();
-  }
-}
-
-async function findTopArticleUrl(homepageUrl) {
-  console.log('Finding top article on:', homepageUrl);
-  const browser = await connectBrowser();
-  try {
-    const page = await setupPage(browser);
-    await page.goto(homepageUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await new Promise(r => setTimeout(r, 1500));
-    await dismissOverlay(page);
-
-    const articleUrl = await page.evaluate((baseUrl) => {
-      const origin = new URL(baseUrl).origin;
-      const links = Array.from(document.querySelectorAll('a[href]'));
-
-      // Heuristics: prefer links that are same-domain, have decent link text,
-      // and look like article paths (longer slugs, dashes, or numeric IDs)
-      const candidates = links
-        .map(a => {
-          const href = a.getAttribute('href');
-          if (!href) return null;
-          let abs;
-          try {
-            abs = new URL(href, baseUrl).toString();
-          } catch (e) {
-            return null;
-          }
-          const text = (a.innerText || '').trim();
-          return { abs, text, rect: a.getBoundingClientRect() };
-        })
-        .filter(c => c && c.abs.startsWith(origin))
-        .filter(c => c.text.length > 25) // headline-length text
-        .filter(c => /\/[a-z0-9-]{10,}/i.test(new URL(c.abs).pathname))
-        .filter(c => c.rect.top >= 0 && c.rect.top < 1200); // near the top of the page
-
-      if (candidates.length === 0) return null;
-
-      // Prefer whichever qualifying link appears highest/earliest on the page
-      candidates.sort((a, b) => a.rect.top - b.rect.top);
-      return candidates[0].abs;
-    }, homepageUrl);
-
-    return articleUrl;
-  } finally {
-    await browser.close();
-  }
-}
-
-async function takeReadScreenshot(url) {
-  console.log('Building read mode for:', url);
-  const html = await getPageHtml(url);
-  const dom = new JSDOM(html, { url });
+async function takeReadScreenshotFromHtml(html, baseUrl) {
+  const dom = new JSDOM(html, { url: baseUrl });
   const reader = new Readability(dom.window.document);
   const article = reader.parse();
 
@@ -391,17 +329,80 @@ async function takeReadScreenshot(url) {
   }
 }
 
+async function takeReadScreenshot(url) {
+  console.log('Building read mode for:', url);
+  const browser = await connectBrowser();
+  let html;
+  try {
+    const page = await setupPage(browser);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 1500));
+    await dismissOverlay(page);
+    html = await page.content();
+  } finally {
+    await browser.close();
+  }
+  return await takeReadScreenshotFromHtml(html, url);
+}
+
+async function findTopArticleUrlOnPage(page, baseUrl) {
+  return await page.evaluate((base) => {
+    const origin = new URL(base).origin;
+    const links = Array.from(document.querySelectorAll('a[href]'));
+
+    const candidates = links
+      .map(a => {
+        const href = a.getAttribute('href');
+        if (!href) return null;
+        let abs;
+        try {
+          abs = new URL(href, base).toString();
+        } catch (e) {
+          return null;
+        }
+        const text = (a.innerText || '').trim();
+        return { abs, text, rect: a.getBoundingClientRect() };
+      })
+      .filter(c => c && c.abs.startsWith(origin))
+      .filter(c => c.text.length > 25)
+      .filter(c => /\/[a-z0-9-]{10,}/i.test(new URL(c.abs).pathname))
+      .filter(c => c.rect.top >= 0 && c.rect.top < 1200);
+
+    if (candidates.length === 0) return null;
+
+    candidates.sort((a, b) => a.rect.top - b.rect.top);
+    return candidates[0].abs;
+  }, baseUrl);
+}
+
 async function takeReadFromTopic(topicOrSite) {
   const homepage = await resolveToHomepage(topicOrSite);
   console.log('Resolved', topicOrSite, '->', homepage);
 
-  const articleUrl = await findTopArticleUrl(homepage);
-  if (!articleUrl) {
-    throw new Error('Could not find a top article on ' + homepage);
-  }
-  console.log('Top article found:', articleUrl);
+  const browser = await connectBrowser();
+  let articleUrl, articleHtml;
+  try {
+    const page = await setupPage(browser);
+    await page.goto(homepage, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 1500));
+    await dismissOverlay(page);
 
-  const buffer = await takeReadScreenshot(articleUrl);
+    articleUrl = await findTopArticleUrlOnPage(page, homepage);
+    if (!articleUrl) {
+      throw new Error('Could not find a top article on ' + homepage);
+    }
+    console.log('Top article found:', articleUrl);
+
+    // Reuse the same browser/page for the article navigation to avoid a second connection
+    await page.goto(articleUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await new Promise(r => setTimeout(r, 1500));
+    await dismissOverlay(page);
+    articleHtml = await page.content();
+  } finally {
+    await browser.close();
+  }
+
+  const buffer = await takeReadScreenshotFromHtml(articleHtml, articleUrl);
   return { buffer, articleUrl };
 }
 
@@ -487,7 +488,6 @@ async function processCommand(command) {
   const trimmed = command.trim();
   const lower = trimmed.toLowerCase();
 
-  // read <url or topic/site name>
   if (lower.startsWith('read ')) {
     const target = trimmed.slice(5).trim();
 
@@ -503,7 +503,6 @@ async function processCommand(command) {
     }
   }
 
-  // translate <url> to <language>
   const translateMatch = trimmed.match(/^translate\s+(\S+)\s+to\s+(.+)$/i);
   if (translateMatch) {
     const url = normalizeUrl(translateMatch[1]);
@@ -513,7 +512,6 @@ async function processCommand(command) {
     return { url: `translate(${lang}): ${url}`, imageUrl };
   }
 
-  // compare <a> vs <b> vs <c> vs ... (2 or more sites)
   if (lower.startsWith('compare ')) {
     const rest = trimmed.slice(8);
     const parts = rest.split(/\s+vs\s+/i).map(p => p.trim()).filter(Boolean);
