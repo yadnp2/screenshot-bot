@@ -422,6 +422,10 @@ app.get('/', (req, res) => {
     <!DOCTYPE html>
     <html>
     <head>
+  <title>Photo Tools - Image Utility</title>
+  <meta name="description" content="Simple online photo and image utility tool for everyday use.">
+  <meta name="keywords" content="photo, image, tools, utility, pictures">
+  <style>
       <title>Screenshot Bot</title>
       <style>
         body { font-family: sans-serif; max-width: 600px; margin: 60px auto; padding: 0 20px; }
