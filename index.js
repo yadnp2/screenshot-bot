@@ -408,7 +408,7 @@ async function askGroqToPickLink(links, userRequest) {
         messages: [
           {
             role: 'system',
-            content: 'You are given a numbered list of links (with their visible link text) scraped from a website homepage, and a request describing what the user wants to read. Pick the single best-matching link number for the request. Reply with ONLY the number, nothing else. If genuinely nothing matches, reply with 0.'
+            content: 'You are given a numbered list of links (with their visible link text) scraped from a website homepage, and a request describing what the user wants to read. Pick the single best-matching link number for the request.\n\nIMPORTANT: Strongly prefer a specific individual NEWS ARTICLE over a category page, topic hub, section index, FAQ page, or tag/archive page. Article links usually have a specific headline-style title describing one event or story. Category/hub pages usually have generic titles like "War With Iran", "Politics", "FAQs", or contain words like "Latest", "Coverage", "Topics", or list multiple unrelated headlines/questions. If the best textual match is a hub/category/FAQ page but a more specific article on the same topic is also in the list, pick the specific article instead.\n\nReply with ONLY the number, nothing else. If genuinely nothing matches, reply with 0.'
           },
           {
             role: 'user',
