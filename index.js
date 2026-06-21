@@ -5,6 +5,9 @@ const cloudinary = require('cloudinary').v2;
 const fetch = require('node-fetch');
 const { Resend } = require('resend');
 const puppeteer = require('puppeteer');
+const sharp = require('sharp');
+const { Readability } = require('@mozilla/readability');
+const { JSDOM } = require('jsdom');
 
 const app = express();
 app.use(express.urlencoded({ extended: false }));
@@ -52,15 +55,19 @@ async function sendMMS(imageUrl, caption) {
   }
 }
 
+function normalizeUrl(raw) {
+  let url = raw.trim();
+  if (!url.startsWith('http')) {
+    url = 'https://' + url;
+  }
+  return url;
+}
+
 async function parseUrl(text) {
   text = text.trim();
 
   if (text.toLowerCase().startsWith('ss ')) {
-    let url = text.slice(3).trim();
-    if (!url.startsWith('http')) {
-      url = 'https://' + url;
-    }
-    return url;
+    return normalizeUrl(text.slice(3));
   }
   if (text.toLowerCase().startsWith('x @')) {
     return `https://x.com/${text.slice(3).trim()}`;
@@ -140,62 +147,70 @@ async function dismissAgeGate(page) {
   }
 }
 
-async function takeScreenshotBrowserless(url) {
-  console.log('Trying Browserless for:', url);
+async function connectBrowser() {
   const token = process.env.BROWSERLESS_API_KEY?.trim();
   if (!token) throw new Error('Missing BROWSERLESS_API_KEY');
-
-  const browser = await puppeteer.connect({
+  return await puppeteer.connect({
     browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
+}
 
+async function setupPage(browser) {
+  const page = await browser.newPage();
+
+  const failedResources = [];
+  page.on('requestfailed', request => {
+    const failure = request.failure();
+    failedResources.push(request.url() + ' - ' + (failure ? failure.errorText : 'unknown'));
+  });
+
+  await page.setCookie({
+    name: 'SRCHHPGUSR',
+    value: 'ADLT=OFF',
+    domain: '.bing.com',
+    url: 'https://www.bing.com',
+  });
+
+  await page.setViewport({ width: 1280, height: 1600 });
+
+  await page.setUserAgent(
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  );
+
+  await page.evaluateOnNewDocument(() => {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+    Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+    window.chrome = { runtime: {} };
+  });
+
+  page._failedResources = failedResources;
+  return page;
+}
+
+async function waitForImages(page) {
+  await page.evaluate(async () => {
+    const images = Array.from(document.images);
+    await Promise.all(images.map(img => {
+      if (img.complete) return Promise.resolve();
+      return new Promise(resolve => {
+        img.addEventListener('load', resolve);
+        img.addEventListener('error', resolve);
+        setTimeout(resolve, 5000);
+      });
+    }));
+  });
+}
+
+async function takeScreenshotBrowserless(url) {
+  console.log('Trying Browserless for:', url);
+  const browser = await connectBrowser();
   try {
-    const page = await browser.newPage();
-
-    const failedResources = [];
-    page.on('requestfailed', request => {
-      const failure = request.failure();
-      failedResources.push(request.url() + ' - ' + (failure ? failure.errorText : 'unknown'));
-    });
-
-    await page.setCookie({
-      name: 'SRCHHPGUSR',
-      value: 'ADLT=OFF',
-      domain: '.bing.com',
-      url: 'https://www.bing.com',
-    });
-
-    await page.setViewport({ width: 1280, height: 1600 });
-
-    await page.setUserAgent(
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    );
-
-    await page.evaluateOnNewDocument(() => {
-      Object.defineProperty(navigator, 'webdriver', { get: () => false });
-      Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
-      Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-      window.chrome = { runtime: {} };
-    });
-
+    const page = await setupPage(browser);
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-
-    await page.evaluate(async () => {
-      const images = Array.from(document.images);
-      await Promise.all(images.map(img => {
-        if (img.complete) return Promise.resolve();
-        return new Promise(resolve => {
-          img.addEventListener('load', resolve);
-          img.addEventListener('error', resolve);
-          setTimeout(resolve, 5000);
-        });
-      }));
-    });
-
+    await waitForImages(page);
     await dismissAgeGate(page);
-
-    console.log('Failed resources:', JSON.stringify(failedResources.slice(0, 20)));
-
+    console.log('Failed resources:', JSON.stringify(page._failedResources.slice(0, 20)));
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
     await browser.close();
@@ -239,6 +254,118 @@ async function takeScreenshot(url) {
   }
 }
 
+// ---- Group 2 features ----
+
+async function getPageHtml(url) {
+  const browser = await connectBrowser();
+  try {
+    const page = await setupPage(browser);
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await new Promise(r => setTimeout(r, 1500));
+    return await page.content();
+  } finally {
+    await browser.close();
+  }
+}
+
+async function takeReadScreenshot(url) {
+  console.log('Building read mode for:', url);
+  const html = await getPageHtml(url);
+  const dom = new JSDOM(html, { url });
+  const reader = new Readability(dom.window.document);
+  const article = reader.parse();
+
+  if (!article) {
+    throw new Error('Could not extract readable content from this page');
+  }
+
+  const safeTitle = (article.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const readableHtml = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: Georgia, serif; max-width: 700px; margin: 40px auto; padding: 0 24px; line-height: 1.6; color: #222; }
+        h1 { font-size: 28px; margin-bottom: 8px; }
+        .byline { color: #666; font-size: 14px; margin-bottom: 24px; }
+        img { max-width: 100%; height: auto; }
+        a { color: #0645ad; }
+      </style>
+    </head>
+    <body>
+      <h1>${safeTitle}</h1>
+      <div class="byline">${article.byline || ''}</div>
+      ${article.content}
+    </body>
+    </html>
+  `;
+
+  const browser = await connectBrowser();
+  try {
+    const page = await setupPage(browser);
+    await page.setContent(readableHtml, { waitUntil: 'domcontentloaded' });
+    await waitForImages(page);
+    return await page.screenshot({ type: 'jpeg', quality: 85, fullPage: true });
+  } finally {
+    await browser.close();
+  }
+}
+
+function langToCode(lang) {
+  const map = {
+    spanish: 'es', french: 'fr', german: 'de', italian: 'it',
+    portuguese: 'pt', hebrew: 'he', yiddish: 'yi', russian: 'ru',
+    chinese: 'zh-CN', japanese: 'ja', korean: 'ko', arabic: 'ar',
+  };
+  return map[lang.toLowerCase().trim()] || lang.trim();
+}
+
+async function takeTranslateScreenshot(url, lang) {
+  const code = langToCode(lang);
+  const translateUrl = `https://translate.google.com/translate?sl=auto&tl=${code}&u=${encodeURIComponent(url)}`;
+  return await takeScreenshot(translateUrl);
+}
+
+async function takeCompareScreenshot(urlA, urlB) {
+  console.log('Comparing:', urlA, 'vs', urlB);
+  const [bufA, bufB] = await Promise.all([
+    takeScreenshot(urlA),
+    takeScreenshot(urlB),
+  ]);
+
+  const imgA = sharp(bufA);
+  const imgB = sharp(bufB);
+  const [metaA, metaB] = await Promise.all([imgA.metadata(), imgB.metadata()]);
+
+  const targetWidth = 640;
+  const heightA = Math.round((metaA.height / metaA.width) * targetWidth);
+  const heightB = Math.round((metaB.height / metaB.width) * targetWidth);
+  const maxHeight = Math.max(heightA, heightB);
+
+  const resizedA = await sharp(bufA).resize(targetWidth, maxHeight, { fit: 'cover', position: 'top' }).toBuffer();
+  const resizedB = await sharp(bufB).resize(targetWidth, maxHeight, { fit: 'cover', position: 'top' }).toBuffer();
+
+  const combined = await sharp({
+    create: {
+      width: targetWidth * 2 + 8,
+      height: maxHeight,
+      channels: 3,
+      background: { r: 255, g: 255, b: 255 },
+    },
+  })
+    .composite([
+      { input: resizedA, left: 0, top: 0 },
+      { input: resizedB, left: targetWidth + 8, top: 0 },
+    ])
+    .jpeg({ quality: 85 })
+    .toBuffer();
+
+  return combined;
+}
+
+// ---- end Group 2 features ----
+
 async function uploadToCloudinary(buffer) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -253,7 +380,38 @@ async function uploadToCloudinary(buffer) {
 }
 
 async function processCommand(command) {
-  const url = await parseUrl(command);
+  const trimmed = command.trim();
+  const lower = trimmed.toLowerCase();
+
+  // read <url>
+  if (lower.startsWith('read ')) {
+    const url = normalizeUrl(trimmed.slice(5));
+    const buffer = await takeReadScreenshot(url);
+    const imageUrl = await uploadToCloudinary(buffer);
+    return { url, imageUrl };
+  }
+
+  // translate <url> to <language>
+  const translateMatch = trimmed.match(/^translate\s+(\S+)\s+to\s+(.+)$/i);
+  if (translateMatch) {
+    const url = normalizeUrl(translateMatch[1]);
+    const lang = translateMatch[2];
+    const buffer = await takeTranslateScreenshot(url, lang);
+    const imageUrl = await uploadToCloudinary(buffer);
+    return { url: `translate(${lang}): ${url}`, imageUrl };
+  }
+
+  // compare <a> vs <b>
+  const compareMatch = trimmed.match(/^compare\s+(\S+)\s+vs\s+(\S+)$/i);
+  if (compareMatch) {
+    const urlA = normalizeUrl(compareMatch[1]);
+    const urlB = normalizeUrl(compareMatch[2]);
+    const buffer = await takeCompareScreenshot(urlA, urlB);
+    const imageUrl = await uploadToCloudinary(buffer);
+    return { url: `${urlA} vs ${urlB}`, imageUrl };
+  }
+
+  const url = await parseUrl(trimmed);
   const buffer = await takeScreenshot(url);
   const imageUrl = await uploadToCloudinary(buffer);
   return { url, imageUrl };
@@ -279,15 +437,17 @@ app.get('/', (req, res) => {
       <div class="commands">
         <strong>Commands:</strong><br>
         <code>ss https://example.com</code> — exact URL<br>
-        <code>ss www.example.com</code> — URL without https<br>
         <code>x @username</code> — X/Twitter profile<br>
         <code>reddit worldnews</code> — subreddit<br>
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
         <code>img tuna</code> — Bing image search<br>
+        <code>read https://site.com/article</code> — clean readable article<br>
+        <code>translate https://site.com to spanish</code> — translated page<br>
+        <code>compare site1.com vs site2.com</code> — side-by-side screenshot<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: fox news" />
+      <input type="text" id="cmd" placeholder="Try: read https://foxnews.com" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
@@ -296,7 +456,7 @@ app.get('/', (req, res) => {
         async function run() {
           const cmd = document.getElementById('cmd').value.trim();
           if (!cmd) return;
-          document.getElementById('status').innerText = 'Taking screenshot...';
+          document.getElementById('status').innerText = 'Working on it...';
           document.getElementById('result').innerHTML = '';
           const res = await fetch('/test', {
             method: 'POST',
@@ -306,7 +466,7 @@ app.get('/', (req, res) => {
           const data = await res.json();
           document.getElementById('status').innerText = '';
           if (data.imageUrl) {
-            document.getElementById('result').innerHTML = '<p>✅ Done! URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a></p><img src="' + data.imageUrl + '" />';
+            document.getElementById('result').innerHTML = '<p>✅ Done! ' + data.url + '</p><img src="' + data.imageUrl + '" />';
           } else {
             document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
           }
@@ -314,7 +474,7 @@ app.get('/', (req, res) => {
         async function runMMS() {
           const cmd = document.getElementById('cmd').value.trim();
           if (!cmd) return;
-          document.getElementById('status').innerText = 'Taking screenshot and sending to your phone...';
+          document.getElementById('status').innerText = 'Working on it and sending to your phone...';
           document.getElementById('result').innerHTML = '';
           const res = await fetch('/test-mms', {
             method: 'POST',
@@ -324,7 +484,7 @@ app.get('/', (req, res) => {
           const data = await res.json();
           document.getElementById('status').innerText = '';
           if (data.success) {
-            document.getElementById('result').innerHTML = '<p>✅ Sent to your phone! URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a></p><img src="' + data.imageUrl + '" />';
+            document.getElementById('result').innerHTML = '<p>✅ Sent to your phone! ' + data.url + '</p><img src="' + data.imageUrl + '" />';
           } else {
             document.getElementById('result').innerHTML = '<p>❌ Error: ' + data.error + '</p>';
           }
@@ -387,7 +547,7 @@ app.post('/webhook', async (req, res) => {
   const twiml = new twilio.twiml.MessagingResponse();
 
   try {
-    twiml.message('Got it! Taking screenshot, give me a few seconds...');
+    twiml.message('Got it! Working on your request...');
     res.type('text/xml').send(twiml.toString());
 
     const { imageUrl } = await processCommand(incomingMsg);
