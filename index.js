@@ -63,6 +63,42 @@ function normalizeUrl(raw) {
   return url;
 }
 
+function looksLikeUrl(text) {
+  const t = text.trim().toLowerCase();
+  return t.startsWith('http') || /^[\w-]+\.[a-z]{2,}/.test(t.split(' ')[0]);
+}
+
+const DIRECT_SITES = {
+  'fox news': 'https://www.foxnews.com',
+  'cnn': 'https://www.cnn.com',
+  'bbc': 'https://www.bbc.com',
+  'nbc': 'https://www.nbcnews.com',
+  'abc news': 'https://abcnews.go.com',
+  'nyt': 'https://www.nytimes.com',
+  'new york times': 'https://www.nytimes.com',
+  'washington post': 'https://www.washingtonpost.com',
+  'espn': 'https://www.espn.com',
+  'weather': 'https://weather.com',
+  'amazon': 'https://www.amazon.com',
+  'ebay': 'https://www.ebay.com',
+  'netflix': 'https://www.netflix.com',
+  'instagram': 'https://www.instagram.com',
+  'facebook': 'https://www.facebook.com',
+  'tiktok': 'https://www.tiktok.com',
+};
+
+async function resolveToHomepage(text) {
+  const lowerText = text.toLowerCase().trim();
+  if (DIRECT_SITES[lowerText]) {
+    return DIRECT_SITES[lowerText];
+  }
+  if (looksLikeUrl(text)) {
+    return normalizeUrl(text);
+  }
+  // fall back to a search results page if we don't recognize the name
+  return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
+}
+
 async function parseUrl(text) {
   text = text.trim();
 
@@ -88,28 +124,9 @@ async function parseUrl(text) {
     return `https://www.bing.com/images/search?q=${encodeURIComponent(text.slice(4).trim())}&safeSearch=Off`;
   }
 
-  const directSites = {
-    'fox news': 'https://www.foxnews.com',
-    'cnn': 'https://www.cnn.com',
-    'bbc': 'https://www.bbc.com',
-    'nbc': 'https://www.nbcnews.com',
-    'abc news': 'https://abcnews.go.com',
-    'nyt': 'https://www.nytimes.com',
-    'new york times': 'https://www.nytimes.com',
-    'washington post': 'https://www.washingtonpost.com',
-    'espn': 'https://www.espn.com',
-    'weather': 'https://weather.com',
-    'amazon': 'https://www.amazon.com',
-    'ebay': 'https://www.ebay.com',
-    'netflix': 'https://www.netflix.com',
-    'instagram': 'https://www.instagram.com',
-    'facebook': 'https://www.facebook.com',
-    'tiktok': 'https://www.tiktok.com',
-  };
-
   const lowerText = text.toLowerCase();
-  if (directSites[lowerText]) {
-    return directSites[lowerText];
+  if (DIRECT_SITES[lowerText]) {
+    return DIRECT_SITES[lowerText];
   }
 
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
@@ -118,17 +135,14 @@ async function parseUrl(text) {
 async function dismissOverlay(page) {
   try {
     let totalClicked = 0;
-    // Run a couple of passes since dismissing one overlay sometimes reveals another
     for (let pass = 0; pass < 2; pass++) {
       const clicked = await page.evaluate(() => {
         const texts = [
-          // age gates
           'i am 18', 'i am 18+', "i'm 18", "i'm 18+",
           'i am of legal age', 'confirm age', 'verify age',
           'i am an adult', 'enter site', 'click to enter',
           'i am over 18', 'i am over 21', 'legal age',
           'age verification',
-          // cookie / consent / terms popups
           'accept all', 'accept cookies', 'accept', 'i accept',
           'got it', 'i agree', 'agree', 'allow all', 'allow',
           'continue', 'proceed', 'ok', 'okay', 'dismiss',
@@ -287,6 +301,52 @@ async function getPageHtml(url) {
   }
 }
 
+async function findTopArticleUrl(homepageUrl) {
+  console.log('Finding top article on:', homepageUrl);
+  const browser = await connectBrowser();
+  try {
+    const page = await setupPage(browser);
+    await page.goto(homepageUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await new Promise(r => setTimeout(r, 1500));
+    await dismissOverlay(page);
+
+    const articleUrl = await page.evaluate((baseUrl) => {
+      const origin = new URL(baseUrl).origin;
+      const links = Array.from(document.querySelectorAll('a[href]'));
+
+      // Heuristics: prefer links that are same-domain, have decent link text,
+      // and look like article paths (longer slugs, dashes, or numeric IDs)
+      const candidates = links
+        .map(a => {
+          const href = a.getAttribute('href');
+          if (!href) return null;
+          let abs;
+          try {
+            abs = new URL(href, baseUrl).toString();
+          } catch (e) {
+            return null;
+          }
+          const text = (a.innerText || '').trim();
+          return { abs, text, rect: a.getBoundingClientRect() };
+        })
+        .filter(c => c && c.abs.startsWith(origin))
+        .filter(c => c.text.length > 25) // headline-length text
+        .filter(c => /\/[a-z0-9-]{10,}/i.test(new URL(c.abs).pathname))
+        .filter(c => c.rect.top >= 0 && c.rect.top < 1200); // near the top of the page
+
+      if (candidates.length === 0) return null;
+
+      // Prefer whichever qualifying link appears highest/earliest on the page
+      candidates.sort((a, b) => a.rect.top - b.rect.top);
+      return candidates[0].abs;
+    }, homepageUrl);
+
+    return articleUrl;
+  } finally {
+    await browser.close();
+  }
+}
+
 async function takeReadScreenshot(url) {
   console.log('Building read mode for:', url);
   const html = await getPageHtml(url);
@@ -331,6 +391,20 @@ async function takeReadScreenshot(url) {
   }
 }
 
+async function takeReadFromTopic(topicOrSite) {
+  const homepage = await resolveToHomepage(topicOrSite);
+  console.log('Resolved', topicOrSite, '->', homepage);
+
+  const articleUrl = await findTopArticleUrl(homepage);
+  if (!articleUrl) {
+    throw new Error('Could not find a top article on ' + homepage);
+  }
+  console.log('Top article found:', articleUrl);
+
+  const buffer = await takeReadScreenshot(articleUrl);
+  return { buffer, articleUrl };
+}
+
 function langToCode(lang) {
   const map = {
     spanish: 'es', french: 'fr', german: 'de', italian: 'it',
@@ -355,7 +429,7 @@ async function takeCompareScreenshot(urls) {
   const gap = 8;
 
   const metas = await Promise.all(buffers.map(b => sharp(b).metadata()));
-  const heights = metas.map((m, i) => Math.round((m.height / m.width) * targetWidth));
+  const heights = metas.map((m) => Math.round((m.height / m.width) * targetWidth));
   const maxHeight = Math.max(...heights);
 
   const resized = await Promise.all(
@@ -364,7 +438,6 @@ async function takeCompareScreenshot(urls) {
     )
   );
 
-  // Wrap into rows of up to 3 columns for larger comparisons
   const perRow = urls.length <= 3 ? urls.length : 3;
   const rows = Math.ceil(urls.length / perRow);
   const totalWidth = perRow * targetWidth + (perRow - 1) * gap;
@@ -414,12 +487,20 @@ async function processCommand(command) {
   const trimmed = command.trim();
   const lower = trimmed.toLowerCase();
 
-  // read <url>
+  // read <url or topic/site name>
   if (lower.startsWith('read ')) {
-    const url = normalizeUrl(trimmed.slice(5));
-    const buffer = await takeReadScreenshot(url);
-    const imageUrl = await uploadToCloudinary(buffer);
-    return { url, imageUrl };
+    const target = trimmed.slice(5).trim();
+
+    if (looksLikeUrl(target)) {
+      const url = normalizeUrl(target);
+      const buffer = await takeReadScreenshot(url);
+      const imageUrl = await uploadToCloudinary(buffer);
+      return { url, imageUrl };
+    } else {
+      const { buffer, articleUrl } = await takeReadFromTopic(target);
+      const imageUrl = await uploadToCloudinary(buffer);
+      return { url: articleUrl, imageUrl };
+    }
   }
 
   // translate <url> to <language>
@@ -477,12 +558,13 @@ app.get('/', (req, res) => {
         <code>wiki Albert Einstein</code> — Wikipedia<br>
         <code>yt lofi music</code> — YouTube search<br>
         <code>img tuna</code> — Bing image search<br>
-        <code>read https://site.com/article</code> — clean readable article<br>
+        <code>read https://site.com/article</code> — clean readable article (exact URL)<br>
+        <code>read fox news</code> — finds and reads the top story automatically<br>
         <code>translate https://site.com to spanish</code> — translated page<br>
         <code>compare site1.com vs site2.com vs site3.com</code> — side-by-side, any number of sites<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: compare cnn.com vs foxnews.com vs bbc.com" />
+      <input type="text" id="cmd" placeholder="Try: read fox news" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
