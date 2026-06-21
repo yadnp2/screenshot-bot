@@ -23,6 +23,7 @@ const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_A
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 console.log('BROWSERLESS_API_KEY present:', !!process.env.BROWSERLESS_API_KEY);
+console.log('GROQ_API_KEY present:', !!process.env.GROQ_API_KEY);
 
 async function sendMMS(imageUrl, caption) {
   const imageBuffer = await fetch(imageUrl).then(r => r.buffer());
@@ -94,8 +95,6 @@ async function resolveToHomepage(text) {
     return DIRECT_SITES[lowerText];
   }
 
-  // Check if any known site name appears anywhere in a longer sentence
-  // Sort by length descending so "new york times" matches before a shorter overlapping key would
   const siteNames = Object.keys(DIRECT_SITES).sort((a, b) => b.length - a.length);
   for (const name of siteNames) {
     if (lowerText.includes(name)) {
@@ -357,37 +356,85 @@ async function takeReadScreenshot(url) {
   return await takeReadScreenshotFromHtml(html, url);
 }
 
-async function findTopArticleUrlOnPage(page, baseUrl) {
+async function extractLinksFromPage(page, baseUrl) {
   return await page.evaluate((base) => {
     const origin = new URL(base).origin;
     const links = Array.from(document.querySelectorAll('a[href]'));
+    const seen = new Set();
+    const results = [];
 
-    const candidates = links
-      .map(a => {
-        const href = a.getAttribute('href');
-        if (!href) return null;
-        let abs;
-        try {
-          abs = new URL(href, base).toString();
-        } catch (e) {
-          return null;
-        }
-        const text = (a.innerText || '').trim();
-        return { abs, text, rect: a.getBoundingClientRect() };
-      })
-      .filter(c => c && c.abs.startsWith(origin))
-      .filter(c => c.text.length > 25)
-      .filter(c => /\/[a-z0-9-]{10,}/i.test(new URL(c.abs).pathname))
-      .filter(c => c.rect.top >= 0 && c.rect.top < 1200);
+    for (const a of links) {
+      const href = a.getAttribute('href');
+      if (!href) continue;
+      let abs;
+      try {
+        abs = new URL(href, base).toString();
+      } catch (e) {
+        continue;
+      }
+      if (!abs.startsWith(origin)) continue;
 
-    if (candidates.length === 0) return null;
+      const text = (a.innerText || '').trim().replace(/\s+/g, ' ');
+      if (text.length < 8) continue;
+      if (seen.has(abs)) continue;
+      seen.add(abs);
 
-    candidates.sort((a, b) => a.rect.top - b.rect.top);
-    return candidates[0].abs;
+      results.push({ url: abs, text: text.slice(0, 120) });
+      if (results.length >= 80) break;
+    }
+    return results;
   }, baseUrl);
 }
 
-async function takeReadFromTopic(topicOrSite) {
+async function askGroqToPickLink(links, userRequest) {
+  if (!process.env.GROQ_API_KEY) {
+    console.log('No GROQ_API_KEY set, cannot use AI link picking');
+    return null;
+  }
+
+  const listText = links
+    .map((l, i) => `${i + 1}. "${l.text}" -> ${l.url}`)
+    .join('\n');
+
+  try {
+    const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + process.env.GROQ_API_KEY,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are given a numbered list of links (with their visible link text) scraped from a website homepage, and a request describing what the user wants to read. Pick the single best-matching link number for the request. Reply with ONLY the number, nothing else. If genuinely nothing matches, reply with 0.'
+          },
+          {
+            role: 'user',
+            content: `Request: "${userRequest}"\n\nLinks:\n${listText}`
+          }
+        ],
+        max_tokens: 10,
+      }),
+    });
+
+    const data = await groqResponse.json();
+    const raw = data?.choices?.[0]?.message?.content?.trim();
+    console.log('Groq link pick raw response:', raw);
+
+    const num = parseInt(raw, 10);
+    if (!num || num < 1 || num > links.length) {
+      return null;
+    }
+    return links[num - 1].url;
+  } catch (e) {
+    console.log('Groq link-picking error:', e.message);
+    return null;
+  }
+}
+
+async function takeReadFromTopic(topicOrSite, originalRequest) {
   const homepage = await resolveToHomepage(topicOrSite);
   console.log('Resolved', topicOrSite, '->', homepage);
 
@@ -399,13 +446,21 @@ async function takeReadFromTopic(topicOrSite) {
     await new Promise(r => setTimeout(r, 1500));
     await dismissOverlay(page);
 
-    articleUrl = await findTopArticleUrlOnPage(page, homepage);
-    if (!articleUrl) {
-      throw new Error('Could not find a top article on ' + homepage);
+    const links = await extractLinksFromPage(page, homepage);
+    if (links.length === 0) {
+      throw new Error('Could not find any article links on ' + homepage);
     }
-    console.log('Top article found:', articleUrl);
 
-    // Reuse the same browser/page for the article navigation to avoid a second connection
+    articleUrl = await askGroqToPickLink(links, originalRequest || topicOrSite);
+
+    if (!articleUrl) {
+      // Fallback: just take the first reasonably long-text link if AI picking failed
+      articleUrl = links[0].url;
+      console.log('Groq pick failed, falling back to first link:', articleUrl);
+    } else {
+      console.log('Groq picked article:', articleUrl);
+    }
+
     await page.goto(articleUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise(r => setTimeout(r, 1500));
     await dismissOverlay(page);
@@ -483,6 +538,38 @@ async function takeCompareScreenshot(urls) {
 
 // ---- end Group 2 features ----
 
+async function downloadFile(url) {
+  console.log('Downloading file from:', url);
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || 'application/octet-stream';
+  const buffer = await response.buffer();
+
+  return { buffer, contentType };
+}
+
+async function uploadFileToCloudinary(buffer, contentType) {
+  const isVideo = contentType.includes('video');
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder: 'downloads', resource_type: isVideo ? 'video' : 'auto' },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result.secure_url);
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
 async function uploadToCloudinary(buffer) {
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
@@ -500,6 +587,13 @@ async function processCommand(command) {
   const trimmed = command.trim();
   const lower = trimmed.toLowerCase();
 
+  if (lower.startsWith('dl ')) {
+    const url = normalizeUrl(trimmed.slice(3));
+    const { buffer, contentType } = await downloadFile(url);
+    const fileUrl = await uploadFileToCloudinary(buffer, contentType);
+    return { url, imageUrl: fileUrl };
+  }
+
   if (lower.startsWith('read ')) {
     const target = trimmed.slice(5).trim();
 
@@ -509,7 +603,7 @@ async function processCommand(command) {
       const imageUrl = await uploadToCloudinary(buffer);
       return { url, imageUrl };
     } else {
-      const { buffer, articleUrl } = await takeReadFromTopic(target);
+      const { buffer, articleUrl } = await takeReadFromTopic(target, target);
       const imageUrl = await uploadToCloudinary(buffer);
       return { url: articleUrl, imageUrl };
     }
@@ -569,12 +663,13 @@ app.get('/', (req, res) => {
         <code>yt lofi music</code> — YouTube search<br>
         <code>img tuna</code> — Bing image search<br>
         <code>read https://site.com/article</code> — clean readable article (exact URL)<br>
-        <code>read fox news</code> — finds and reads the top story automatically<br>
+        <code>read fox news about Iran</code> — AI finds the best-matching article<br>
         <code>translate https://site.com to spanish</code> — translated page<br>
         <code>compare site1.com vs site2.com vs site3.com</code> — side-by-side, any number of sites<br>
+        <code>dl https://example.com/file.pdf</code> — download a direct file link<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: read fox news" />
+      <input type="text" id="cmd" placeholder="Try: read fox news about Iran" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
