@@ -89,12 +89,24 @@ const DIRECT_SITES = {
 
 async function resolveToHomepage(text) {
   const lowerText = text.toLowerCase().trim();
+
   if (DIRECT_SITES[lowerText]) {
     return DIRECT_SITES[lowerText];
   }
+
+  // Check if any known site name appears anywhere in a longer sentence
+  // Sort by length descending so "new york times" matches before a shorter overlapping key would
+  const siteNames = Object.keys(DIRECT_SITES).sort((a, b) => b.length - a.length);
+  for (const name of siteNames) {
+    if (lowerText.includes(name)) {
+      return DIRECT_SITES[name];
+    }
+  }
+
   if (looksLikeUrl(text)) {
     return normalizeUrl(text);
   }
+
   return `https://www.bing.com/search?q=${encodeURIComponent(text)}`;
 }
 
