@@ -146,11 +146,17 @@ async function takeScreenshotBrowserless(url) {
   if (!token) throw new Error('Missing BROWSERLESS_API_KEY');
 
   const browser = await puppeteer.connect({
-    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}&stealth=true`,
+    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${token}`,
   });
 
   try {
     const page = await browser.newPage();
+
+    const failedResources = [];
+    page.on('requestfailed', request => {
+      const failure = request.failure();
+      failedResources.push(request.url() + ' - ' + (failure ? failure.errorText : 'unknown'));
+    });
 
     await page.setExtraHTTPHeaders({
       'Accept-Language': 'en-US,en;q=0.9',
@@ -185,8 +191,22 @@ async function takeScreenshotBrowserless(url) {
     });
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await new Promise(r => setTimeout(r, 2000));
+
+    await page.evaluate(async () => {
+      const images = Array.from(document.images);
+      await Promise.all(images.map(img => {
+        if (img.complete) return Promise.resolve();
+        return new Promise(resolve => {
+          img.addEventListener('load', resolve);
+          img.addEventListener('error', resolve);
+          setTimeout(resolve, 5000);
+        });
+      }));
+    });
+
     await dismissAgeGate(page);
+
+    console.log('Failed resources:', JSON.stringify(failedResources.slice(0, 20)));
 
     return await page.screenshot({ type: 'jpeg', quality: 80 });
   } finally {
@@ -203,15 +223,13 @@ async function takeScreenshotOne(url) {
     viewport_height: '1600',
     format: 'jpg',
     image_quality: '80',
-    block_ads: 'true',
     block_cookie_banners: 'true',
-    block_trackers: 'true',
     ignore_host_errors: 'true',
   });
 
   const screenshotUrl = `https://api.screenshotone.com/take?${params.toString()}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25000);
+  const timeout = setTimeout(() => controller.abort(), 55000);
   const response = await fetch(screenshotUrl, { signal: controller.signal });
   clearTimeout(timeout);
 
