@@ -454,7 +454,6 @@ async function takeReadFromTopic(topicOrSite, originalRequest) {
     articleUrl = await askGroqToPickLink(links, originalRequest || topicOrSite);
 
     if (!articleUrl) {
-      // Fallback: just take the first reasonably long-text link if AI picking failed
       articleUrl = links[0].url;
       console.log('Groq pick failed, falling back to first link:', articleUrl);
     } else {
@@ -491,7 +490,14 @@ async function takeTranslateScreenshot(url, lang) {
 async function takeCompareScreenshot(urls) {
   console.log('Comparing', urls.length, 'sites:', urls.join(' | '));
 
-  const buffers = await Promise.all(urls.map(u => takeScreenshot(u)));
+  // Take screenshots one at a time instead of all in parallel —
+  // avoids tripping Browserless rate limits and gives each site's
+  // overlay-dismissal logic full attention without competing for resources.
+  const buffers = [];
+  for (const u of urls) {
+    const buf = await takeScreenshot(u);
+    buffers.push(buf);
+  }
 
   const targetWidth = urls.length <= 2 ? 640 : urls.length === 3 ? 460 : 360;
   const gap = 8;
@@ -669,7 +675,7 @@ app.get('/', (req, res) => {
         <code>dl https://example.com/file.pdf</code> — download a direct file link<br>
         <code>fox news</code> — anything else = smart search
       </div>
-      <input type="text" id="cmd" placeholder="Try: read fox news about Iran" />
+      <input type="text" id="cmd" placeholder="Try: compare cnn.com vs foxnews.com vs bbc.com" />
       <button onclick="run()">Test in Browser</button>
       <button onclick="runMMS()">Send to My Phone</button>
       <div id="status"></div>
